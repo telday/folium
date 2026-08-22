@@ -138,7 +138,9 @@ struct DocumentRelativeLinksTests {
     @Test func attributesOtherThanSrcAndHrefAreUntouched() {
         let html = #"<img src="screenshot.png" alt="a relative path in prose: ./not-an-attribute.png">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/screenshot.png" alt="a relative path in prose: ./not-an-attribute.png">"#)
+        let expected = #"<img src="file:///Users/me/My%20Docs%20%232/screenshot.png" "#
+            + #"alt="a relative path in prose: ./not-an-attribute.png">"#
+        #expect(resolved == expected)
     }
 
     @Test func multipleReferencesInOneDocumentAllResolve() {
