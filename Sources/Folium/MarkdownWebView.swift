@@ -14,13 +14,28 @@ import WebKit
 struct MarkdownWebView: NSViewRepresentable {
     let bodyHTML: String
     let scrollKeys: ScrollKeyBindings
+    /// The open document's own directory, or `nil` for one with nothing on
+    /// disk (e.g. a brand-new untitled window). Carried by the `folium-doc:`
+    /// scheme handler this view registers below, and by `Coordinator` for
+    /// resolving a clicked sibling-document link — see issue #18.
+    let documentDirectory: URL?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(documentDirectory: documentDirectory)
     }
 
     func makeNSView(context: Context) -> ScrollKeyWebView {
-        let webView = ScrollKeyWebView()
+        let configuration = WKWebViewConfiguration()
+        if let documentDirectory {
+            // Must be set before the web view exists —
+            // `setURLSchemeHandler(_:forURLScheme:)` cannot be called on a
+            // configuration already handed to a live WKWebView. A document
+            // with nothing on disk gets no handler at all: a folium-doc:
+            // request with nowhere to resolve against would only ever fail.
+            let schemeHandler = DocumentResourceSchemeHandler(documentDirectory: documentDirectory)
+            configuration.setURLSchemeHandler(schemeHandler, forURLScheme: DocumentResourceResolver.scheme)
+        }
+        let webView = ScrollKeyWebView(configuration: configuration)
         webView.scrollKeys = scrollKeys
         webView.navigationDelegate = context.coordinator
         webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
@@ -43,6 +58,13 @@ struct MarkdownWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         let state = MarkdownWebViewState()
 
+        /// The open document's own directory — see `MarkdownWebView`'s
+        /// property of the same name. Captured once, at `makeCoordinator()`
+        /// time: SwiftUI doesn't call it again for the lifetime of the
+        /// view's identity, and a document's own directory doesn't move
+        /// out from under an already-open window.
+        let documentDirectory: URL?
+
         /// Opens an external link. Injected, defaulting to the real
         /// `NSWorkspace.shared.open(_:)`, so tests can record what would
         /// have opened instead of launching the user's browser on every run.
@@ -56,9 +78,11 @@ struct MarkdownWebView: NSViewRepresentable {
         let openDocument: (URL) -> Void
 
         init(
+            documentDirectory: URL? = nil,
             openExternal: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
             openDocument: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
         ) {
+            self.documentDirectory = documentDirectory
             self.openExternal = openExternal
             self.openDocument = openDocument
         }
@@ -122,7 +146,12 @@ struct MarkdownWebView: NSViewRepresentable {
                 url: navigationAction.request.url,
                 isLinkActivation: navigationAction.navigationType == .linkActivated
             )
-            switch NavigationPolicy.decide(request, shellURL: MarkdownPage.pageURL) {
+            let decision = NavigationPolicy.decide(
+                request,
+                shellURL: MarkdownPage.pageURL,
+                documentDirectory: documentDirectory
+            )
+            switch decision {
             case .allow:
                 decisionHandler(.allow)
             case .openInBrowser(let url):
@@ -156,6 +185,14 @@ struct MarkdownWebView: NSViewRepresentable {
 /// what's left here is `NSEvent` translation and the `evaluateJavaScript` call.
 final class ScrollKeyWebView: WKWebView {
     var scrollKeys: ScrollKeyBindings = .standard
+
+    /// `WKWebView`'s only designated initializer takes a configuration —
+    /// there is no plain `init()` to inherit — and `MarkdownWebView` has to
+    /// build that configuration first to register a `folium-doc:` scheme
+    /// handler on it (issue #18) before this view exists at all.
+    convenience init(configuration: WKWebViewConfiguration) {
+        self.init(frame: .zero, configuration: configuration)
+    }
 
     override func keyDown(with event: NSEvent) {
         guard let direction = scrollKeys.direction(for: ScrollKeyPress(event)) else {

@@ -3,8 +3,10 @@ import Testing
 @testable import Folium
 
 /// Unit coverage for issue #18's resolution table: which `src`/`href`
-/// values get rewritten to an absolute `file://` URL under the document's
-/// directory, and which are left exactly as they were.
+/// values get rewritten to a `folium-doc://doc/<relative path>` URL, and
+/// which are left exactly as they were. `DocumentResourceResolverTests`
+/// covers the separate question of which of those rewritten URLs are
+/// actually servable.
 struct DocumentRelativeLinksTests {
     // A directory with a space and a `#` in its name, so a naive
     // string-concatenation implementation would corrupt every case below —
@@ -16,31 +18,36 @@ struct DocumentRelativeLinksTests {
     @Test func dotSlashRelativeImageResolvesUnderTheDirectory() {
         let html = #"<img src="./screenshot.png" alt="">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/screenshot.png" alt="">"#)
+        #expect(resolved == #"<img src="folium-doc://doc/screenshot.png" alt="">"#)
     }
 
     @Test func bareRelativeImageResolvesUnderTheDirectory() {
         let html = #"<img src="screenshot.png" alt="">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/screenshot.png" alt="">"#)
+        #expect(resolved == #"<img src="folium-doc://doc/screenshot.png" alt="">"#)
     }
 
     @Test func parentDirectoryReferenceWalksUpBeforeResolving() {
+        // The rewriter's job is only to describe the reference, not to
+        // decide whether it's servable — that containment decision belongs
+        // to DocumentResourceResolver (DocumentResourceResolverTests), which
+        // refuses anything above the document's own directory. This still
+        // walks the `..` up correctly, so the URL means what it says.
         let html = #"<a href="../sibling/notes.md">notes</a>"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<a href="file:///Users/me/sibling/notes.md">notes</a>"#)
+        #expect(resolved == #"<a href="folium-doc://doc/../sibling/notes.md">notes</a>"#)
     }
 
     @Test func siblingMarkdownLinkResolves() {
         let html = #"<a href="sibling.md">sibling</a>"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<a href="file:///Users/me/My%20Docs%20%232/sibling.md">sibling</a>"#)
+        #expect(resolved == #"<a href="folium-doc://doc/sibling.md">sibling</a>"#)
     }
 
     @Test func siblingMarkdownLinkWithAnchorKeepsTheFragment() {
         let html = ##"<a href="sibling.md#section">sibling</a>"##
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == ##"<a href="file:///Users/me/My%20Docs%20%232/sibling.md#section">sibling</a>"##)
+        #expect(resolved == ##"<a href="folium-doc://doc/sibling.md#section">sibling</a>"##)
     }
 
     // MARK: - Percent-encoding: spaces, `#`/`?`, and non-ASCII in filenames
@@ -52,13 +59,13 @@ struct DocumentRelativeLinksTests {
         // would turn it into `%2520`, a broken filename.
         let html = #"<img src="./my%20file.png" alt="">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/my%20file.png" alt="">"#)
+        #expect(resolved == #"<img src="folium-doc://doc/my%20file.png" alt="">"#)
     }
 
     @Test func alreadyPercentEncodedNonASCIIIsNotDoubleEncoded() {
         let html = #"<img src="./caf%C3%A9.png" alt="">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/caf%C3%A9.png" alt="">"#)
+        #expect(resolved == #"<img src="folium-doc://doc/caf%C3%A9.png" alt="">"#)
     }
 
     @Test func literalHashInAFilenameSplitsAsAFragmentLikeAnyURLWould() {
@@ -69,13 +76,13 @@ struct DocumentRelativeLinksTests {
         // literal `#` in a filename.
         let html = ##"<img src="./a#b.png" alt="">"##
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == ##"<img src="file:///Users/me/My%20Docs%20%232/a#b.png" alt="">"##)
+        #expect(resolved == ##"<img src="folium-doc://doc/a#b.png" alt="">"##)
     }
 
     @Test func literalQuestionMarkInAFilenameIsKeptAsAQueryByTheSameLogic() {
         let html = #"<img src="./a?b=1.png" alt="">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved == #"<img src="file:///Users/me/My%20Docs%20%232/a?b=1.png" alt="">"#)
+        #expect(resolved == #"<img src="folium-doc://doc/a?b=1.png" alt="">"#)
     }
 
     // MARK: - Forms that must be left exactly alone
@@ -97,6 +104,25 @@ struct DocumentRelativeLinksTests {
 
     @Test func mailtoURLIsLeftAlone() {
         let html = #"<a href="mailto:a@example.com">mail</a>"#
+        #expect(DocumentRelativeLinks.resolve(html, relativeTo: directory) == html)
+    }
+
+    @Test func aSchemeContainingAHyphenIsStillRecognizedAsAbsolute() {
+        // RFC 3986 allows `+`, `-`, and `.` after a scheme's first letter —
+        // rarer than `http`/`file`, but real (`ms-settings:`, `web+app:`).
+        // `hasScheme` only proves it recognizes one of these correctly if a
+        // test actually uses a character besides a plain letter here.
+        let html = #"<a href="web+custom-scheme:payload">link</a>"#
+        #expect(DocumentRelativeLinks.resolve(html, relativeTo: directory) == html)
+    }
+
+    @Test func aReferenceToTheDocumentsOwnDirectoryIsLeftAlone() {
+        // `.` resolves to `directory` itself — nothing relative to walk down
+        // to, and no file for a `folium-doc:` request to name. Left
+        // untouched rather than turned into a URL naming a directory, the
+        // same conservative default as every other form `resolve` can't
+        // confidently turn into a file reference.
+        let html = #"<a href=".">here</a>"#
         #expect(DocumentRelativeLinks.resolve(html, relativeTo: directory) == html)
     }
 
@@ -138,7 +164,7 @@ struct DocumentRelativeLinksTests {
     @Test func attributesOtherThanSrcAndHrefAreUntouched() {
         let html = #"<img src="screenshot.png" alt="a relative path in prose: ./not-an-attribute.png">"#
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        let expected = #"<img src="file:///Users/me/My%20Docs%20%232/screenshot.png" "#
+        let expected = #"<img src="folium-doc://doc/screenshot.png" "#
             + #"alt="a relative path in prose: ./not-an-attribute.png">"#
         #expect(resolved == expected)
     }
@@ -150,8 +176,8 @@ struct DocumentRelativeLinksTests {
         <p><img src="https://example.com/c.png" alt=""></p>
         """
         let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
-        #expect(resolved.contains(#"src="file:///Users/me/My%20Docs%20%232/a.png""#))
-        #expect(resolved.contains(#"href="file:///Users/me/My%20Docs%20%232/b.md""#))
+        #expect(resolved.contains(#"src="folium-doc://doc/a.png""#))
+        #expect(resolved.contains(#"href="folium-doc://doc/b.md""#))
         #expect(resolved.contains(#"src="https://example.com/c.png""#))
     }
 
@@ -177,7 +203,6 @@ struct DocumentRelativeLinksTests {
 
         let document = LiveDocument(text: "![alt](./screenshot.png)", fileURL: fileURL)
 
-        let expectedPrefix = "src=\"\(directory.appendingPathComponent("screenshot.png").absoluteString)\""
-        #expect(document.bodyHTML.contains(expectedPrefix))
+        #expect(document.bodyHTML.contains(#"src="folium-doc://doc/screenshot.png""#))
     }
 }

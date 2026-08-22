@@ -91,6 +91,22 @@ struct ReloadCoalescerTests {
         #expect(reloads.total == 2)
     }
 
+    @Test func aWindowThatOutlivesTheCoalescerDoesNothing() {
+        // The window closing after the document itself has gone away — the
+        // window closed while the file's own document window was closing.
+        // `[weak self]` is what keeps that from touching a deallocated
+        // instance; this proves the closure gives up cleanly instead.
+        let scheduler = ManualScheduler()
+        let reloads = Counter()
+        var coalescer: ReloadCoalescer? = ReloadCoalescer(scheduler: scheduler, reload: reloads.increment)
+
+        coalescer?.noteChange()
+        coalescer = nil
+        scheduler.elapse()
+
+        #expect(reloads.total == 0)
+    }
+
     @Test func theRealSchedulerDefersTheWorkAndThenRunsIt() async {
         // The one thing the manual scheduler can't show: the real one waits,
         // and then actually fires.

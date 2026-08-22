@@ -77,3 +77,17 @@ in force before the grant is widened. Tracked as its own issue.
 This does not change the decision — unsandboxed remains the right call, and
 sandboxing would make the fix strictly harder (security-scoped bookmarks per
 document).
+
+### 2026-08-22 — fixed, but not by widening the grant
+
+The paragraph above predicted the fix correctly needed CSP in force first,
+but guessed wrong about the shape of the fix itself: widening the grant
+turned out to be impossible, not just risky. `loadFileURL` requires the
+loaded shell to sit inside the granted directory, the shell lives inside
+`Folium.app/Contents/Resources`, and a document can be anywhere under the
+user's home folder — there is no single directory a real installation could
+grant that contains both. See
+[ADR 0007](0007-document-resources-via-url-scheme.md) for the fix that
+shipped instead: a private `folium-doc:` URL scheme, handled entirely in the
+app's own (still unsandboxed) process, so the web content process never
+receives a directory grant at all.

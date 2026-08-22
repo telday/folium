@@ -22,8 +22,15 @@
   document-relative URLs in Swift rather than injecting a <base> tag; leave
   this here so that approach can't quietly regress to the tag-based one.
   Placed before the asset tags below so nothing in <head> loads unpoliced.
+
+  `img-src`/`media-src` also allow the private `folium-doc:` scheme
+  (issue #18): a document's own images and media load through
+  `DocumentResourceSchemeHandler`, which reads the bytes on the app's
+  process rather than granting the web content process any filesystem
+  access. `folium-doc:` is not added to `script-src`/`style-src` — nothing
+  a rendered document references is ever executed or cascaded as code.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file:; style-src file:; img-src file:; font-src file:; media-src file:; base-uri 'none'; form-action 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file:; style-src file:; img-src file: folium-doc:; font-src file:; media-src file: folium-doc:; base-uri 'none'; form-action 'none';">
 <link rel="stylesheet" href="github.css">
 <link rel="stylesheet" href="../HighlightJS/styles/github.min.css" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="../HighlightJS/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">

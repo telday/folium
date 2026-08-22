@@ -80,15 +80,21 @@ struct MarkdownPageTests {
             "default-src 'none'",
             "script-src file:",
             "style-src file:",
-            "img-src file:",
+            "img-src file: folium-doc:",
             "font-src file:",
-            "media-src file:",
+            "media-src file: folium-doc:",
             "base-uri 'none'",
             "form-action 'none'"
         ]
         for directive in directives {
             #expect(cspContent.contains(directive), "missing CSP directive: \(directive)")
         }
+        // folium-doc: (issue #18) is a private scheme this app's own
+        // WKURLSchemeHandler serves, never something a document could
+        // execute — it belongs only where a document's own images/media
+        // load from, not where scripts or stylesheets could run.
+        #expect(!cspContent.contains("script-src file: folium-doc:"))
+        #expect(!cspContent.contains("style-src file: folium-doc:"))
         // The whole point of this CSP: no directive may use 'self', which
         // was found not to restrict http(s) sources on this file:// page.
         #expect(!cspContent.contains("'self'"))

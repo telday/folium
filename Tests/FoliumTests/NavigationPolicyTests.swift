@@ -11,7 +11,22 @@ struct NavigationPolicyTests {
         let name: String
         let url: URL?
         let isLinkActivation: Bool
+        let documentDirectory: URL?
         let expected: NavigationDecision
+
+        init(
+            name: String,
+            url: URL?,
+            isLinkActivation: Bool,
+            documentDirectory: URL? = nil,
+            expected: NavigationDecision
+        ) {
+            self.name = name
+            self.url = url
+            self.isLinkActivation = isLinkActivation
+            self.documentDirectory = documentDirectory
+            self.expected = expected
+        }
     }
 
     private var cases: [Case] {
@@ -133,10 +148,65 @@ struct NavigationPolicyTests {
         for testCase in cases {
             let decision = NavigationPolicy.decide(
                 NavigationRequest(url: testCase.url, isLinkActivation: testCase.isLinkActivation),
-                shellURL: shellURL
+                shellURL: shellURL,
+                documentDirectory: testCase.documentDirectory
             )
             #expect(decision == testCase.expected, "\(testCase.name)")
         }
+    }
+
+    // MARK: - folium-doc: links (issue #18)
+    //
+    // These need a real file on disk — DocumentResourceResolver.fileURL,
+    // which decide() calls to map a clicked link back to a real path,
+    // refuses to resolve anything that doesn't exist as a regular file — so
+    // they're kept out of the table above and given their own fixture.
+
+    @Test func documentSchemeLinkToAFileInsideTheDirectoryOpensAsASiblingDocument() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.md")
+        try Data().write(to: notes)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    @Test func documentSchemeLinkThatEscapesTheDirectoryIsBlockedNotOpened() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/../../etc/passwd"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .block)
+    }
+
+    @Test func documentSchemeLinkWithNoDocumentDirectoryIsBlocked() {
+        // A document with nothing on disk (a brand-new untitled window) has
+        // no directory of its own to resolve a folium-doc: link against.
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: nil
+        )
+
+        #expect(decision == .block)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NavigationPolicyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 }
 

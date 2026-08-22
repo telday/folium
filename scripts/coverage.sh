@@ -19,6 +19,7 @@ EXCLUDED_FILES=(
   "Sources/Folium/DocumentWindowTabber.swift" # NSViewRepresentable + NSWindow tab-group calls — needs live windows
   "Sources/Folium/FoliumAppDelegate.swift" # NSApplicationDelegate — only AppKit calls it, at launch
   "Sources/Folium/PreferencesView.swift"  # SwiftUI Settings content + an NSButton subclass — needs a live window
+  "Sources/Folium/DocumentResourceSchemeHandler.swift" # WKURLSchemeHandler — needs a live WKWebView to call it at all
 )
 
 # Build an llvm-cov --ignore-filename-regex from the excluded list plus build/test dirs.

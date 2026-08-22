@@ -7,17 +7,26 @@ import Foundation
 /// the app bundle, and never reloads it. A relative reference in a rendered
 /// document — `![](./screenshot.png)` — has no base of its own; WebKit
 /// resolves it against whatever page is currently loaded, which is the
-/// shell, not the document. A spike against the real shell (see the PR)
-/// confirmed this and ruled out the other plausible cause: an *absolute*
-/// `file://` URL outside the granted read-access directory still loads, so
-/// the read-access grant was never what blocked a sibling image. The fix
-/// belongs here, in Swift, rather than a `<base>` tag in the page shell:
-/// the CSP's `base-uri 'none'` (issue #17) forecloses that route
-/// deliberately, so relative references have to be rewritten to absolute
-/// `file://` URLs before they ever reach the DOM.
+/// shell, not the document.
+///
+/// An early version of this fix rewrote references to absolute `file://`
+/// URLs and widened `loadFileURL`'s read-access grant to cover the
+/// document's directory. Measurement against the real shell (see
+/// `docs/adr/0007-document-resources-via-url-scheme.md`) found that grant
+/// has to include whatever directory the shell itself loads from, and in
+/// production there is no directory that contains both
+/// `Folium.app/Contents/Resources` and an arbitrary document under the
+/// user's home folder. This function now targets the private `folium-doc:`
+/// scheme instead: `DocumentResourceSchemeHandler` reads the bytes on the
+/// app's own process, so the web content process never receives a
+/// filesystem grant at all. The fix still belongs here, in Swift, rather
+/// than a `<base>` tag in the page shell: the CSP's `base-uri 'none'`
+/// (issue #17) forecloses that route deliberately, so relative references
+/// have to be rewritten before they ever reach the DOM.
 enum DocumentRelativeLinks {
-    /// Rewrites every document-relative `src`/`href` value in `html` to an
-    /// absolute `file://` URL resolved against `directory`.
+    /// Rewrites every document-relative `src`/`href` value in `html` to a
+    /// `folium-doc://doc/<relative path>` URL, expressed relative to
+    /// `directory`.
     ///
     /// Only plain relative references are touched. Left alone, byte-for-byte:
     /// - Absolute URLs with any scheme (`http:`, `https:`, `data:`,
@@ -84,8 +93,64 @@ enum DocumentRelativeLinks {
             return nil
         }
         guard !hasScheme(value) else { return nil }
-        return URL(string: value, relativeTo: directory)?.absoluteURL.absoluteString
+        // `URL(string:relativeTo:)` against the real directory does the
+        // actual reference-resolution work — walking `..` segments,
+        // decoding what's already percent-encoded without doing it twice —
+        // exactly as it did when this produced a `file://` URL. What's new
+        // is turning that resolved location into a `folium-doc:` URL naming
+        // the same file relative to `directory`, since the scheme handler
+        // on the other end resolves every request that way too (see
+        // `DocumentResourceResolver`).
+        guard let resolved = URL(string: value, relativeTo: directory)?.absoluteURL else { return nil }
+        return documentSchemeURLString(for: resolved, relativeTo: directory)
     }
+
+    /// Rebuilds `resolved` (an absolute `file://` location) as a
+    /// `folium-doc://doc/<relative path>` URL, walking up out of `directory`
+    /// with `..` segments if the reference pointed above it. Query and
+    /// fragment carry over unchanged — a document-relative reference like
+    /// `sibling.md#section` still has to land on the right anchor once
+    /// `NavigationPolicy` opens it.
+    private static func documentSchemeURLString(for resolved: URL, relativeTo directory: URL) -> String? {
+        // `.standardized`, not `.standardizedFileURL`: the latter — like
+        // `.resolvingSymlinksInPath()` — consults the filesystem-
+        // representation machinery, which on macOS silently renders an
+        // accented character in Unicode's decomposed form (`e` + a
+        // combining acute accent) instead of the precomposed form
+        // `URL(string:relativeTo:)` itself produces. `.standardized` only
+        // collapses `.`/`..` segments in the string, so it can't introduce
+        // that mismatch.
+        let directoryComponents = directory.standardized.pathComponents.filter { $0 != "/" }
+        let targetComponents = resolved.standardized.pathComponents.filter { $0 != "/" }
+
+        var sharedPrefixLength = 0
+        while sharedPrefixLength < directoryComponents.count,
+              sharedPrefixLength < targetComponents.count,
+              directoryComponents[sharedPrefixLength] == targetComponents[sharedPrefixLength] {
+            sharedPrefixLength += 1
+        }
+        let ascents = Array(repeating: "..", count: directoryComponents.count - sharedPrefixLength)
+        let relativeComponents = ascents + targetComponents[sharedPrefixLength...]
+        guard !relativeComponents.isEmpty else { return nil }
+
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = "doc"
+        // Setting `.path` from decoded component strings, rather than
+        // building the string by hand, is what makes `URLComponents`
+        // percent-encode it correctly — the same job `URL(string:relativeTo:)`
+        // did when this produced a `file://` URL directly.
+        components.path = "/" + relativeComponents.joined(separator: "/")
+        components.query = resolved.query
+        components.fragment = resolved.fragment
+        return components.url?.absoluteString
+    }
+
+    /// The scheme string is defined once, on `DocumentResourceResolver`, and
+    /// referenced from here and from `DocumentResourceSchemeHandler` — so
+    /// the three places that all have to agree on `"folium-doc"` can't drift
+    /// apart from each other.
+    private static let scheme = DocumentResourceResolver.scheme
 
     /// Whether `value` starts with an RFC 3986 URI scheme (`ALPHA
     /// *(ALPHA / DIGIT / "+" / "-" / ".") ":"`) — the same grammar that

@@ -34,7 +34,7 @@ struct RelativePathTests {
             Bundle.module.url(forResource: "relative-image", withExtension: "md", subdirectory: "Fixtures"),
             "missing Fixtures/relative-image.md"
         )
-        let webView = try await loadedShell()
+        let webView = try await loadedShell(documentDirectory: fixture.deletingLastPathComponent())
 
         // The production path: LiveDocument renders *and* resolves against the
         // file's own directory. Anything less would test a reimplementation.
@@ -44,6 +44,48 @@ struct RelativePathTests {
         )
 
         #expect(await waitUntil { try await self.naturalWidth(of: "img", in: webView) > 0 })
+    }
+
+    /// The teeth of `DocumentResourceResolver`'s containment check, proven
+    /// through the real `WKURLSchemeHandler` rather than by calling the
+    /// resolver directly (`DocumentResourceResolverTests` already does
+    /// that): this is what an attacker actually controls, a `src` value
+    /// baked straight into rendered HTML. `DocumentRelativeLinks` only ever
+    /// emits a `folium-doc:` URL that stays inside the document's own
+    /// directory, so the one way this string reaches the handler is a
+    /// document that spells out the scheme by hand — which `resolve` leaves
+    /// untouched as an already-absolute reference (see its doc comment),
+    /// same as it would leave a literal `file:` URL untouched.
+    @Test func traversalOutsideTheDocumentDirectoryIsRefused() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let webView = try await loadedShell(documentDirectory: directory)
+
+        let result = try await loadImage(src: "folium-doc://doc/../../../../../../etc/passwd", in: webView)
+
+        #expect(result == .failed)
+    }
+
+    /// The other half of containment: a symlink *inside* the document's own
+    /// directory that resolves to a file outside it. `DocumentResourceResolverTests`
+    /// covers this against the resolver directly; this proves the same thing
+    /// end to end, through the handler WebKit actually calls.
+    @Test func symlinkEscapingTheDocumentDirectoryIsRefused() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let secretDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: secretDirectory) }
+        let secretFile = secretDirectory.appendingPathComponent("secret.png")
+        try Self.onePixelPNG.write(to: secretFile)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("escape.png"),
+            withDestinationURL: secretFile
+        )
+        let webView = try await loadedShell(documentDirectory: directory)
+
+        let result = try await loadImage(src: "folium-doc://doc/escape.png", in: webView)
+
+        #expect(result == .failed)
     }
 
     /// Widening what the document can reach must not widen what the *network*
@@ -63,12 +105,27 @@ struct RelativePathTests {
 
     // MARK: - Helpers
 
-    /// Loads the real shell exactly as `MarkdownWebView` does. No window and
-    /// no `Coordinator` here: nothing in this suite clicks a link or waits on
-    /// an animation, which is what `ContentSecurityPolicyTests` needs those
-    /// for.
-    private func loadedShell() async throws -> WKWebView {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1012, height: 800))
+    /// A 1x1 transparent PNG — the smallest file that is unambiguously a
+    /// real, loadable image rather than a stand-in. Mirrors
+    /// `ContentSecurityPolicyTests`'s fixture of the same shape.
+    private static let onePixelPNG = Data(
+        base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )!
+
+    /// Loads the real shell exactly as `MarkdownWebView` does — including
+    /// registering a `folium-doc:` scheme handler for `documentDirectory`,
+    /// the same wiring `MarkdownWebView.makeNSView` does before creating its
+    /// web view (`setURLSchemeHandler(_:forURLScheme:)` cannot be called
+    /// afterwards). No window and no `Coordinator` here: nothing in this
+    /// suite clicks a link or waits on an animation, which is what
+    /// `ContentSecurityPolicyTests` needs those for.
+    private func loadedShell(documentDirectory: URL? = nil) async throws -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        if let documentDirectory {
+            let schemeHandler = DocumentResourceSchemeHandler(documentDirectory: documentDirectory)
+            configuration.setURLSchemeHandler(schemeHandler, forURLScheme: DocumentResourceResolver.scheme)
+        }
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1012, height: 800), configuration: configuration)
         let waiter = NavigationWaiter()
         webView.navigationDelegate = waiter
         webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
@@ -81,6 +138,41 @@ struct RelativePathTests {
             "document.querySelector('\(selector)')?.naturalWidth ?? 0"
         )
         return (result as? Double) ?? Double((result as? Int) ?? 0)
+    }
+
+    private enum ImageLoadResult: Equatable {
+        case loaded
+        case failed
+    }
+
+    /// Appends an `<img src="\(src)">` to the page and waits for its own
+    /// `load`/`error` event, rather than polling `naturalWidth` the way
+    /// `siblingImageReferencedRelativelyActuallyLoads` does: a refused
+    /// request never becomes non-zero, so a poll can only prove "hasn't
+    /// loaded *yet*", not "was refused". Watching for `error` distinguishes
+    /// a real refusal from a slow load.
+    private func loadImage(src: String, in webView: WKWebView) async throws -> ImageLoadResult {
+        let srcJSON = try JSONEncoder().encode(src)
+        let srcJSString = String(data: srcJSON, encoding: .utf8)!
+        let functionBody = """
+        return new Promise(function (resolve) {
+          var img = document.createElement('img');
+          img.onload = function () { resolve('loaded'); };
+          img.onerror = function () { resolve('failed'); };
+          img.src = \(srcJSString);
+          document.body.appendChild(img);
+          setTimeout(function () { resolve('failed'); }, 3000);
+        });
+        """
+        let result = try await webView.callAsyncJavaScript(functionBody, in: nil, contentWorld: .page)
+        return (result as? String) == "loaded" ? .loaded : .failed
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RelativePathTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     /// Polls rather than sleeping: how long WebKit takes to decode a file off

@@ -21,11 +21,12 @@ enum NavigationDecision: Equatable {
     case allow
     case openInBrowser(URL)
     case scrollToAnchor(String)
-    /// A link to a `file:` URL other than the shell itself — a sibling
-    /// Markdown file, most often, once `DocumentRelativeLinks` (issue #18)
-    /// has resolved it to an absolute path. Handled by cancelling the
-    /// navigation and handing the URL to `NSWorkspace`, the same way
-    /// `openInBrowser` hands an http(s) URL to the user's browser.
+    /// A link to another file — a sibling Markdown file, most often, once
+    /// `DocumentRelativeLinks` (issue #18) has rewritten it to a
+    /// `folium-doc:` URL and `decide` has resolved that back to a real path.
+    /// Handled by cancelling the navigation and handing the URL to
+    /// `NSWorkspace`, the same way `openInBrowser` hands an http(s) URL to
+    /// the user's browser.
     case openDocument(URL)
     case block
 }
@@ -35,10 +36,15 @@ enum NavigationDecision: Equatable {
 /// function rather than grown inside `MarkdownWebView.swift`'s excluded
 /// glue — see `docs/agents/definition-of-done.md`.
 enum NavigationPolicy {
-    /// - Parameter shellURL: `MarkdownPage.pageURL`, the shell's own address.
-    ///   A request whose URL matches this one, fragment aside, is the shell
-    ///   navigating to (or within) itself rather than following a link.
-    static func decide(_ request: NavigationRequest, shellURL: URL) -> NavigationDecision {
+    /// - Parameters:
+    ///   - shellURL: `MarkdownPage.pageURL`, the shell's own address. A
+    ///     request whose URL matches this one, fragment aside, is the shell
+    ///     navigating to (or within) itself rather than following a link.
+    ///   - documentDirectory: the open document's own directory, needed to
+    ///     resolve a `folium-doc:` link back to the real file it names. `nil`
+    ///     for a document with nothing on disk, which has no such links to
+    ///     resolve in the first place.
+    static func decide(_ request: NavigationRequest, shellURL: URL, documentDirectory: URL?) -> NavigationDecision {
         guard let url = request.url else { return .block }
 
         if url.scheme == "http" || url.scheme == "https" {
@@ -59,14 +65,31 @@ enum NavigationPolicy {
             return .block
         }
 
-        // A file: URL that isn't the shell itself is a sibling document —
-        // `DocumentRelativeLinks` (issue #18) resolves a Markdown link like
-        // `[roadmap](./roadmap.md)` to one of these before it ever reaches
-        // here. Handing it to NSWorkspace, rather than trying to load it
-        // into this web view, is what "sibling .md file" opening as a new
-        // native document window means.
+        // An absolute file: URL an author wrote directly into the Markdown
+        // source (`DocumentRelativeLinks` leaves any URL with an explicit
+        // scheme untouched — see its doc comment). Handing it to
+        // NSWorkspace, rather than trying to load it into this web view, is
+        // what "sibling file" opening as a new native document window means.
         if url.scheme == "file" {
             return .openDocument(url)
+        }
+
+        // A folium-doc: URL is what `DocumentRelativeLinks` (issue #18) now
+        // rewrites a document-relative link like `[roadmap](./roadmap.md)`
+        // to. Unlike an <img>/<link> request, which the web content process
+        // never sees the real path for, a clicked link has to leave the web
+        // view entirely — so this maps it back through the same containment
+        // check `DocumentResourceSchemeHandler` uses before handing anything
+        // to NSWorkspace. No `documentDirectory` or a request the resolver
+        // refuses both fall through to .block rather than opening nothing:
+        // a link that resolves to nowhere is not a link this app should act on.
+        if url.scheme == DocumentResourceResolver.scheme {
+            guard let documentDirectory,
+                  let resolved = DocumentResourceResolver.fileURL(for: url, documentDirectory: documentDirectory)
+            else {
+                return .block
+            }
+            return .openDocument(resolved)
         }
 
         // Everything else — javascript:, data:, mailto:, custom schemes —
