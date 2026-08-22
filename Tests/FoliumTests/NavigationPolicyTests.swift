@@ -53,9 +53,14 @@ struct NavigationPolicyTests {
                 expected: .block
             ),
             Case(
-                name: "file: to a different file is blocked",
+                name: "file: to a different file opens as a sibling document",
                 url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: true,
-                expected: .block
+                expected: .openDocument(URL(string: "file:///Users/me/notes.md")!)
+            ),
+            Case(
+                name: "file: to a different file opens even when it wasn't a click",
+                url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: false,
+                expected: .openDocument(URL(string: "file:///Users/me/notes.md")!)
             ),
             Case(
                 name: "javascript: is blocked",

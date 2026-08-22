@@ -48,8 +48,19 @@ struct MarkdownWebView: NSViewRepresentable {
         /// have opened instead of launching the user's browser on every run.
         let openExternal: (URL) -> Void
 
-        init(openExternal: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
+        /// Opens a sibling document (issue #18) with the user's default
+        /// application for its file type — `NSWorkspace.shared.open(_:)`
+        /// again, but injected separately from `openExternal` so a test
+        /// asserting on one path can't be satisfied by the other firing
+        /// instead.
+        let openDocument: (URL) -> Void
+
+        init(
+            openExternal: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
+            openDocument: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+        ) {
             self.openExternal = openExternal
+            self.openDocument = openDocument
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -119,6 +130,9 @@ struct MarkdownWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
             case .scrollToAnchor(let fragment):
                 webView.evaluateJavaScript(MarkdownPage.scrollToAnchorScript(fragment))
+                decisionHandler(.cancel)
+            case .openDocument(let url):
+                openDocument(url)
                 decisionHandler(.cancel)
             case .block:
                 decisionHandler(.cancel)

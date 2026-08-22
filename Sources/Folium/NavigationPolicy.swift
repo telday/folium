@@ -21,6 +21,12 @@ enum NavigationDecision: Equatable {
     case allow
     case openInBrowser(URL)
     case scrollToAnchor(String)
+    /// A link to a `file:` URL other than the shell itself — a sibling
+    /// Markdown file, most often, once `DocumentRelativeLinks` (issue #18)
+    /// has resolved it to an absolute path. Handled by cancelling the
+    /// navigation and handing the URL to `NSWorkspace`, the same way
+    /// `openInBrowser` hands an http(s) URL to the user's browser.
+    case openDocument(URL)
     case block
 }
 
@@ -50,12 +56,21 @@ enum NavigationPolicy {
             if !request.isLinkActivation {
                 return .allow
             }
+            return .block
         }
 
-        // Everything else — file:, javascript:, data:, mailto:, custom
-        // schemes, or a link to the shell with no fragment — is blocked.
-        // Issue #18 will extend this for sibling .md file: links; that is
-        // deliberately not handled yet.
+        // A file: URL that isn't the shell itself is a sibling document —
+        // `DocumentRelativeLinks` (issue #18) resolves a Markdown link like
+        // `[roadmap](./roadmap.md)` to one of these before it ever reaches
+        // here. Handing it to NSWorkspace, rather than trying to load it
+        // into this web view, is what "sibling .md file" opening as a new
+        // native document window means.
+        if url.scheme == "file" {
+            return .openDocument(url)
+        }
+
+        // Everything else — javascript:, data:, mailto:, custom schemes —
+        // is blocked.
         return .block
     }
 }
