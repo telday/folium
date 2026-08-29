@@ -68,14 +68,22 @@ struct NavigationPolicyTests {
                 expected: .block
             ),
             Case(
-                name: "file: to a different file opens as a sibling document",
+                // An absolute file: URL an author wrote directly into the
+                // Markdown source is never rewritten by DocumentRelativeLinks
+                // (it already has a scheme), so it reaches decide() exactly
+                // as authored — with no containment check possible, since it
+                // could name anything on the filesystem. Handing that to
+                // NSWorkspace would launch whatever it points at from a
+                // single click on untrusted content, so this is blocked, not
+                // opened. See the comment on this case in NavigationPolicy.
+                name: "an absolute file: link is blocked, not opened",
                 url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: true,
-                expected: .openDocument(URL(string: "file:///Users/me/notes.md")!)
+                expected: .block
             ),
             Case(
-                name: "file: to a different file opens even when it wasn't a click",
+                name: "an absolute file: link is blocked even when it wasn't a click",
                 url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: false,
-                expected: .openDocument(URL(string: "file:///Users/me/notes.md")!)
+                expected: .block
             ),
             Case(
                 name: "javascript: is blocked",
@@ -175,6 +183,42 @@ struct NavigationPolicyTests {
         )
 
         #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    @Test func documentSchemeLinkToAFileWithTheLongMarkdownExtensionOpens() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.markdown")
+        try Data().write(to: notes)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.markdown"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    /// The containment check alone isn't enough: `install.command` sitting
+    /// right next to a README is exactly as reachable, by the same
+    /// containment rules, as `screenshot.png` is. `.openDocument` hands its
+    /// URL to `NSWorkspace`, which launches it — so this is refused even
+    /// though the file is real, regular, and fully inside the document's
+    /// own directory.
+    @Test func documentSchemeLinkToANonMarkdownFileIsBlockedEvenThoughItsContained() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("install.command")
+        try Data().write(to: executable)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/install.command"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .block)
     }
 
     @Test func documentSchemeLinkThatEscapesTheDirectoryIsBlockedNotOpened() throws {
