@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Orchestrates the latency-budget measurements: launches the app with the
 # fixture, waits for its markers, writes real new content to trigger a
 # live-reload, and prints measured vs budgeted latency. Exits 0 regardless;
@@ -181,12 +181,28 @@ fi
 # marker_timestamp already applies to FOLIUM_BENCH markers.
 if grep -q "^FOLIUM_BENCH_REPORT " "$MARKERS" 2>/dev/null; then
     grep "^FOLIUM_BENCH_REPORT " "$MARKERS" | awk '!seen[$2]++' | sed -E 's/^FOLIUM_BENCH_REPORT [^ ]+ //'
-else
-    report_line "Markdown → HTML render (fixture)" "" "" "renderer did not emit timing"
-    report_line "Warm open (app already running) → painted" "" "" "requires driving an already-running app's UI"
-    report_line "Tab switch" "" "" "requires driving an already-running app's UI"
-    report_line "Scrolling / dropped frames" "" "" "out of scope for this fixture"
 fi
+
+# Then fill in any moment that never reported, checked one event at a time
+# rather than "did the app report anything at all". The app emits the three
+# permanently-unmeasured lines from `FoliumApp.init`, before it has opened
+# anything, so under FOLIUM_BENCH that prefix is present in almost every
+# run — an all-or-nothing fallback is therefore dead code, and a `render`
+# that never fired (app died early, document never opened) would drop out
+# of the report entirely instead of saying so. A measurement harness has to
+# show a hole, not hide one.
+reported() {
+    grep -q "^FOLIUM_BENCH_REPORT $1 " "$MARKERS" 2>/dev/null
+}
+
+reported render || \
+    report_line "Markdown → HTML render (fixture)" "" "" "renderer did not emit timing"
+reported warm-open || \
+    report_line "Warm open (app already running) → painted" "" "" "requires driving an already-running app's UI"
+reported tab-switch || \
+    report_line "Tab switch" "" "" "requires driving an already-running app's UI"
+reported scrolling || \
+    report_line "Scrolling / dropped frames" "" "" "out of scope for this fixture"
 
 echo ""
 echo "Notes"

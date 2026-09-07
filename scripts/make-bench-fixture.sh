@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Generate a deterministic ~500 KB Markdown document with 100+ code blocks
 # in mixed languages, plus tables, lists, headings, and inline formatting.
 # No randomness; running it twice produces identical bytes.

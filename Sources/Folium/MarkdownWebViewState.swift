@@ -45,11 +45,9 @@ final class MarkdownWebViewState {
     /// a paint for real needs a live `WKWebView` and stays in that excluded
     /// glue file.
     ///
-    /// The `nil` case is not an optimization, it is the point: confirming a
-    /// paint means chaining a second, awaited `WKWebView` call after the
-    /// first, and a real user launching or live-reloading with FOLIUM_BENCH
-    /// unset must never pay for that extra round trip — the exact thing
-    /// `CONTEXT.md`'s latency budgets are measuring.
+    /// Confirming a paint chains a second, awaited `WKWebView` call after
+    /// the injection; returning `nil` is what keeps that round trip off a
+    /// real user's launch and live-reload.
     func paintEventToConfirm() -> String? {
         guard benchMarker.isEnabled else { return nil }
         guard hasEmittedFirstPaint else {

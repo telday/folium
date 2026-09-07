@@ -90,11 +90,9 @@ struct BenchBudget {
     /// `BenchMarker.writeLine`: `FOLIUM_BENCH_REPORT <event> <line>` — the
     /// same wire format `BenchMarker.measure` uses for `render`, so
     /// `scripts/bench.sh` can look either kind up by event and fall back
-    /// per-event if one is ever missing. None of these depend on anything
-    /// that happens at runtime — driving an already-running app's own UI
-    /// can't happen from a process `scripts/bench.sh` launches once and
-    /// tears down — so the app states them once, at launch, instead of the
-    /// script hardcoding them.
+    /// per-event if one is missing. Emitted at launch rather than
+    /// hardcoded in the script: none of them depend on anything that
+    /// happens at runtime.
     static func unmeasuredReportLines() -> [String] {
         unmeasuredReasons.keys.sorted().map { event in
             let line = reportLineUnmeasured(event: event, reason: unmeasuredReasons[event] ?? "")
