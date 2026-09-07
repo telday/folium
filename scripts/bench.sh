@@ -15,7 +15,7 @@
 set -euo pipefail
 
 FIXTURE="${1:-.build/bench/fixture.md}"
-BINARY="${2:?usage: bench.sh <fixture> <binary> — the Makefile derives <binary> from BENCH_BUILD_DIR}"
+BINARY="${2:?usage: bench.sh <fixture> <binary> — the Makefile passes the executable inside \$(APP_BUNDLE)}"
 
 if [[ ! -f "$FIXTURE" ]]; then
     echo "Error: fixture not found at $FIXTURE" >&2
@@ -200,9 +200,9 @@ echo "  reload-paint."
 echo "- Warm open and tab switch need an already-running app's UI driven from"
 echo "  outside, which a shell script cannot do honestly."
 echo "- Scrolling / dropped frames is out of scope for this fixture."
-echo "- This binary is a single-architecture build for the machine running"
-echo "  this script, not the universal, signed .app \`make bundle\`/\`make"
-echo "  install\` produce — see the Makefile's BENCH_BUILD_DIR."
+echo "- Measured against the executable inside the real signed .app that"
+echo "  \`make bundle\`/\`make install\` produce, run directly so this script"
+echo "  can read its stderr — see the Makefile's bench recipe."
 echo ""
 
 # Always exit 0. CI records these numbers as an informational trend, not a

@@ -23,8 +23,17 @@ final class FoliumAppDelegate: NSObject, NSApplicationDelegate {
     /// double-click would, just triggered by an environment variable
     /// instead of an Apple Event. Unset for every real user, so this is
     /// inert outside a bench run.
+    ///
+    /// The activation is not cosmetic. `MarkdownWebView`'s paint
+    /// confirmation waits on `requestAnimationFrame`, and WebKit does not
+    /// run animation-frame callbacks for a window that isn't on screen — a
+    /// process started from a terminal stays behind whatever was already
+    /// frontmost, so without this the callback never fires and the run
+    /// reports "not measured" instead of a number. Measured directly: 0 of
+    /// 6 unactivated runs produced a `first-paint` marker.
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let url = BenchOpen.url() else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
         NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
     }
 

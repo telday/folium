@@ -48,3 +48,24 @@ jobs:
       # bundle and assert its finished shape. See scripts/verify-bundle.sh.
       - name: make bundle && make verify-bundle
         run: make bundle && make verify-bundle
+
+      # Informational only, never a gate: wall-clock numbers from a shared
+      # runner measure the runner, and a gate that fails randomly trains
+      # everyone to ignore it (issue #21, CONTEXT.md's perceived-latency
+      # priority). `make bench` exits 0 whether or not a budget is met, so
+      # continue-on-error covers only the recipe failing outright.
+      #
+      # Expect the paint-dependent lines to read "not measured" here: those
+      # wait on requestAnimationFrame, which needs a window on screen, and a
+      # runner has no attached display session. The render timing, and the
+      # record that the recipe still runs, are what this step is for.
+      - name: make bench
+        continue-on-error: true
+        run: make bench 2>&1 | tee bench-results.txt
+
+      - name: Upload bench results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: bench-results.txt
+          if-no-files-found: warn

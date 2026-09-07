@@ -113,10 +113,12 @@ What Folium owns absolutely is latency.
 
 These are **binding design constraints**, not aspirations.
 
-- Measured by `make bench` on real hardware against the committed
-  large-document fixture. Wall-clock gates on shared CI runners measure noise,
-  so CI records the numbers as an informational trend rather than failing on
-  them.
+- Measured by `make bench` on real hardware, against the large-document
+  fixture `scripts/make-bench-fixture.sh` generates — deterministically, so
+  runs stay comparable, but regenerated rather than committed because the
+  live-reload probe has to write to it. Wall-clock gates on shared CI runners
+  measure noise, so CI records the numbers as an informational trend rather
+  than failing on them.
 - Any change touching the render path states its latency impact and runs
   `make bench`.
 - Knowingly exceeding a budget requires an ADR. Not a shrug.
