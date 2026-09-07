@@ -64,9 +64,19 @@ private extension URL {
     /// `URL.fragment` is the only piece two "same document, different
     /// anchor" URLs differ by, so comparing without it is how `decide` tells
     /// "the shell itself" apart from "a link somewhere else entirely".
+    ///
+    /// Resolved against its base first, because the two URLs being compared
+    /// reach `decide` in different shapes. `MarkdownPage.pageURL` is built
+    /// on `Bundle.main.resourceURL`, which a real `.app` returns as
+    /// *relative* to the bundle — a `baseURL` plus a `relativeString` of
+    /// `Contents/Resources/...` — while WebKit hands `decidePolicyFor` the
+    /// fully resolved absolute URL. `URL` equality compares the relative
+    /// string and base rather than the resolved absolute string, so without
+    /// this the shell's own load compares unequal to itself and gets
+    /// blocked, leaving every document window blank.
     func strippingFragment() -> URL {
-        var components = URLComponents(url: self, resolvingAgainstBaseURL: false)
+        var components = URLComponents(url: absoluteURL, resolvingAgainstBaseURL: true)
         components?.fragment = nil
-        return components?.url ?? self
+        return components?.url ?? absoluteURL
     }
 }
