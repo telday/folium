@@ -38,13 +38,6 @@ struct BenchBudgetTests {
         #expect(line.contains("–"))
     }
 
-    @Test func reportLineForUnmeasuredIncludesReason() {
-        let reason = "requires driving an already-running app's UI"
-        let line = BenchBudget.reportLineUnmeasured(event: "warm-open", reason: reason)
-        #expect(line.contains("not measured"))
-        #expect(line.contains(reason))
-    }
-
     @Test func reportLinesAlignProperlyWithDots() {
         let line = BenchBudget.reportLine(event: "cold-launch", measuredMs: 250)
         // The line should have dots between the event name and the measurement.
@@ -58,18 +51,6 @@ struct BenchBudgetTests {
         // "render" has no budget, so it must not appear here — scripts/bench.sh
         // treats an event with no budget line as unbudgeted, informational only.
         #expect(!lines.contains { $0.contains("render") })
-    }
-
-    /// Tab switch is the only moment left that the harness cannot reach:
-    /// warm open is driven by Launch Services from `scripts/bench.sh`, and
-    /// scrolling by `MarkdownPage.scrollProbeScript` inside the page.
-    @Test func unmeasuredReportLinesCoverEveryPermanentlyUnmeasuredMoment() {
-        let lines = BenchBudget.unmeasuredReportLines()
-        #expect(lines.count == 1)
-        // Event-prefixed, like BenchMarker.measure's FOLIUM_BENCH_REPORT
-        // lines, so scripts/bench.sh can look either kind up by event.
-        #expect(lines.contains { $0.hasPrefix("FOLIUM_BENCH_REPORT tab-switch ") && $0.contains("Tab switch") })
-        #expect(lines.allSatisfy { $0.contains("not measured") })
     }
 
     // MARK: - Scrolling
@@ -120,16 +101,14 @@ struct BenchBudgetTests {
 
     // MARK: - Which moments are measured at all
 
-    /// Warm open and scrolling both moved from "can't be measured" to
-    /// measured; leaving them in `unmeasuredReasons` would print a
-    /// "not measured" line alongside the real number.
-    @Test func warmOpenAndScrollingAreNoLongerReportedAsUnmeasurable() {
-        #expect(BenchBudget.unmeasuredReasons["warm-open"] == nil)
-        #expect(BenchBudget.unmeasuredReasons["scrolling"] == nil)
-        #expect(BenchBudget.unmeasuredReasons["tab-switch"] != nil)
-    }
-
-    @Test func warmOpenCarriesTheBudgetContextDeclares() {
+    /// Every budget in CONTEXT.md's table, at the value it states there.
+    @Test func everyBudgetedMomentCarriesTheValueContextDeclares() {
+        #expect(BenchBudget.budget(for: "cold-launch") == 500)
         #expect(BenchBudget.budget(for: "warm-open") == 150)
+        #expect(BenchBudget.budget(for: "reload-paint") == 100)
+        #expect(BenchBudget.budget(for: "tab-switch") == 50)
+        // Scrolling is budgeted in dropped frames, not milliseconds, so it
+        // reports through scrollReportLine rather than carrying a duration.
+        #expect(BenchBudget.budget(for: "scrolling") == nil)
     }
 }

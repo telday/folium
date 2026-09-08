@@ -11,7 +11,7 @@
 # start-up happen before any of our Swift code runs, so an in-process
 # baseline can never see them. This script takes its own wall-clock reading
 # immediately before it execs the app and subtracts that from the
-# `first-paint` marker instead.
+# first `paint` marker instead.
 set -euo pipefail
 
 FIXTURE="${1:-.build/bench/fixture.md}"
@@ -47,11 +47,17 @@ fi
 # two measurements are comparable.
 WARM_FIXTURE="${FIXTURE%.md}-warm.md"
 cp "$FIXTURE" "$WARM_FIXTURE"
+# A line of its own, of a different length than the live-reload probe's, so
+# the three documents this run paints — the fixture, the fixture after the
+# reload probe, and this one — all render to different body sizes. That is
+# what `paint_after` matches on; identical copies would be indistinguishable.
+printf '\nBench warm-open probe: a second, separate document.\n' >> "$WARM_FIXTURE"
 
 MARKERS=$(mktemp)
 APP_PID=""
 cleanup() {
     [[ -n "$APP_PID" ]] && kill -9 "$APP_PID" 2>/dev/null || true
+    cp "$MARKERS" "${BENCH_DUMP:-/dev/null}" 2>/dev/null || true
     rm -f "$MARKERS"
 }
 trap cleanup EXIT
@@ -88,9 +94,43 @@ marker_timestamp() {
     grep -m1 "^FOLIUM_BENCH $1 " "$MARKERS" | awk '{print $3}'
 }
 
+# Prints the timestamp of the first paint at or after $2 whose body size is
+# none of the sizes listed in $3 (space separated). A paint marker's fourth
+# field is the size of the body it drew — see BenchMarker.mark — so this is
+# "the first paint after I asked that actually drew something new".
+#
+# Needed because a paint alone does not mean the paint being waited for:
+# SwiftUI settles a document through several web views, and those views
+# repaint the *same* body moments after the write. Matching on time alone
+# picked one of those up as the live-reload repaint and reported 21 ms for
+# work that took 280.
+paint_after() {
+    awk -v t0="$1" -v excluded=" $2 " \
+        '$1 == "FOLIUM_BENCH" && $2 == "paint" && $3 + 0 >= t0 \
+         && index(excluded, " " $4 " ") == 0 { print $3; exit }' "$MARKERS"
+}
+
+# The body size a paint drew, for the first paint at or after $1.
+paint_signature_after() {
+    awk -v t0="$1" \
+        '$1 == "FOLIUM_BENCH" && $2 == "paint" && $3 + 0 >= t0 { print $4; exit }' "$MARKERS"
+}
+
+# Polls for a paint matching paint_after's rule, up to $3 tenths of a second.
+wait_for_paint_after() {
+    local after="$1" excluded="$2" timeout_tenths="$3"
+    for ((i = 0; i < timeout_tenths; i++)); do
+        if [[ -n "$(paint_after "$after" "$excluded")" ]]; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 # Prints the timestamp of the first "FOLIUM_BENCH <event> <ts>" marker at or
 # after $2. The warm-open probe needs this rather than marker_timestamp: by
-# the time it runs, `first-paint` has already fired for the cold document,
+# the time it runs, the cold document has already painted,
 # and the question is which paint came after the request, not which came
 # first.
 marker_timestamp_after() {
@@ -146,7 +186,7 @@ elapsed_ms() {
 # for $1: this script still treats that the way BenchBudget.reportLine treats
 # an unbudgeted event, as informational rather than a hard error.
 budget_ms() {
-    grep -m1 "^FOLIUM_BENCH_BUDGET $1 " "$MARKERS" | awk '{print $3}'
+    printf '%s\n' "$BUDGET_TABLE" | grep -m1 "^FOLIUM_BENCH_BUDGET $1 " | awk '{print $3}'
 }
 
 # Mirrors BenchBudget.reportLine's format so cold launch and live-reload —
@@ -181,73 +221,145 @@ echo "Benchmark Results"
 echo "================="
 echo ""
 
-# Cold launch. FOLIUM_BENCH_OPEN tells FoliumAppDelegate to open the fixture
-# as soon as AppKit finishes launching — see that file for why a plain
-# command-line argument isn't enough to make a SwiftUI DocumentGroup app open
-# a document.
+# Each phase below launches its own app. The probes cannot share a session:
+# with the scroll and tab-switch probes armed alongside the live-reload
+# measurement, live-reload reported a number in 2 runs of 6 and scrolling in
+# 2 of 6, because the scroll probe holds the animation frames a repaint needs
+# and a repaint landing mid-scroll counts against the frame budget. One
+# launch per probe costs three app starts and buys measurements that do not
+# interfere.
+#
+# $MARKERS is reset per phase so a later phase never matches an earlier
+# phase's markers.
+start_app() {
+    : > "$MARKERS"
+    FOLIUM_BENCH=1 FOLIUM_BENCH_PROBE="${2:-none}" FOLIUM_BENCH_OPEN="$1" \
+        "$BINARY" 2>"$MARKERS" &
+    APP_PID=$!
+}
+
+stop_app() {
+    [[ -n "$APP_PID" ]] || return 0
+    kill -9 "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+    APP_PID=""
+    # Launch Services routes the warm-open `open` to whatever Folium is
+    # running; a leftover process from the previous phase would take it.
+    sleep 1
+}
+
+# ---------------------------------------------------------------------------
+# Phase 1 — cold launch, Markdown render, live-reload. No in-app probe.
+# ---------------------------------------------------------------------------
 LAUNCH_T0=$(wall_clock)
-FOLIUM_BENCH=1 FOLIUM_BENCH_OPEN="$FIXTURE" "$BINARY" 2>"$MARKERS" &
-APP_PID=$!
+start_app "$FIXTURE"
 
 COLD_LAUNCH_MS=""
-if wait_for_line "FOLIUM_BENCH first-paint" 100; then
-    COLD_LAUNCH_MS=$(elapsed_ms "$(marker_timestamp "first-paint")" "$LAUNCH_T0")
+COLD_SIGNATURE=""
+if wait_for_line "FOLIUM_BENCH paint" 100; then
+    COLD_LAUNCH_MS=$(elapsed_ms "$(marker_timestamp "paint")" "$LAUNCH_T0")
+    COLD_SIGNATURE=$(paint_signature_after 0)
 fi
 
-# Live-reload. `LiveDocument` deliberately treats a rewrite with unchanged
-# rendered output as a no-op — `touch`, or a save of identical bytes, must
-# not repaint — so the probe below has to change the document's actual
-# content, not just its mtime, or `reload-paint` will never fire. Plain
+# `LiveDocument` deliberately treats a rewrite with unchanged rendered output
+# as a no-op — `touch`, or a save of identical bytes, must not repaint — so
+# this has to change the document's actual content, not just its mtime. Plain
 # text, not an HTML comment: cmark's safe mode is what currently makes an
-# HTML comment render differently (substituted for a fixed placeholder), and
-# issue #20 turning that off would make an HTML-comment probe render
-# byte-identically, silently breaking this. $RELOAD_T0 is taken before the
-# write, not after, so the measured window can't understate the time the
-# write itself takes.
+# HTML comment render differently, and issue #20 turning that off would make
+# an HTML-comment probe render byte-identically, silently breaking this.
+# $RELOAD_T0 is taken before the write so the measured window cannot
+# understate the time the write itself takes.
 RELOAD_MS=""
 if [[ -n "$COLD_LAUNCH_MS" ]]; then
+    wait_for_quiet 8 100 || true
     RELOAD_T0=$(wall_clock)
     printf '\nBench live-reload probe.\n' >> "$FIXTURE"
-    if wait_for_line "FOLIUM_BENCH reload-paint" 50; then
-        RELOAD_MS=$(elapsed_ms "$(marker_timestamp "reload-paint")" "$RELOAD_T0")
+    if wait_for_paint_after "$RELOAD_T0" "$COLD_SIGNATURE" 100; then
+        RELOAD_MS=$(elapsed_ms "$(paint_after "$RELOAD_T0" "$COLD_SIGNATURE")" "$RELOAD_T0")
     fi
 fi
 
-# The scroll probe runs inside the app, in the first document's web view,
-# and takes ~180 animation frames to finish. Waited out *here*, before the
-# warm-open probe below opens a second document: that document's window
-# would cover the one being scrolled, and WebKit stops running animation
-# frames for a window that isn't on screen, so the probe would stall
-# part-way through and never report.
-if [[ -n "$COLD_LAUNCH_MS" ]]; then
-    for _ in $(seq 1 150); do
-        grep -q "^FOLIUM_BENCH_REPORT scrolling " "$MARKERS" 2>/dev/null && break
-        sleep 0.1
-    done
-fi
+# Kept before the app is stopped: the budget table and the render report are
+# emitted by the app, and $MARKERS is about to be reused by the next phase.
+APP_REPORTS=$(grep "^FOLIUM_BENCH_REPORT " "$MARKERS" 2>/dev/null || true)
+BUDGET_TABLE=$(grep "^FOLIUM_BENCH_BUDGET " "$MARKERS" 2>/dev/null || true)
+stop_app
 
-# Warm open. Launch Services delivers this to the process already running —
-# verified: the PID is unchanged and the new document's markers arrive on the
-# same stderr stream — which is what makes it a warm open rather than a
-# second cold launch. `open` returns as soon as the event is dispatched, so
-# $WARM_T0 is taken before the call and the paint is found by timestamp.
-#
-# Timed against `first-paint` because a new document window means a new
-# `MarkdownWebViewState`, and each one calls its own first injection
-# `first-paint`; the marker names a view's first paint, not the app's.
+# ---------------------------------------------------------------------------
+# Phase 2 — warm open, then tab switch. Both need a second document, and the
+# switch has to happen after the open it follows, so they share a phase.
+# ---------------------------------------------------------------------------
 WARM_MS=""
-if [[ -n "$COLD_LAUNCH_MS" ]]; then
+TAB_SWITCH_MS=""
+TAB_SWITCH_RERENDERED=""
+start_app "$FIXTURE" tab-switch
+if wait_for_line "FOLIUM_BENCH paint" 100; then
+    WARM_SIGNATURE=$(paint_signature_after 0)
+    # Wait for the marker stream to go quiet first: SwiftUI repaints a
+    # settling document, and a trailing paint from the cold one would
+    # otherwise be read as the warm open and understate it.
     wait_for_quiet 8 100 || true
-    WARM_T0=$(wall_clock)
-    open -a "$BUNDLE" "$WARM_FIXTURE"
-    if wait_for_marker_after "first-paint" "$WARM_T0" 100; then
-        WARM_MS=$(elapsed_ms "$(marker_timestamp_after "first-paint" "$WARM_T0")" "$WARM_T0")
+    # Launch Services delivers this to the process already running —
+    # verified, the PID is unchanged and the new document's markers arrive on
+    # the same stderr — which is what makes it a warm open and not a second
+    # cold launch. `open` returns as soon as the event is dispatched, so
+    # $WARM_T0 is taken before the call.
+    #
+    # Retried because the delivery is not guaranteed on the first ask: this
+    # phase's app was started seconds earlier by exec'ing the bundle's
+    # executable, and until Launch Services has registered that process an
+    # `open` can be answered by starting a *second* copy instead — one whose
+    # stderr this script never sees, so no paint ever arrives. Measured: one
+    # ask landed in 2 runs of 6, three asks in 6 of 6.
+    for _ in 1 2 3; do
+        WARM_T0=$(wall_clock)
+        open -a "$BUNDLE" "$WARM_FIXTURE"
+        if wait_for_paint_after "$WARM_T0" "$WARM_SIGNATURE" 60; then
+            WARM_MS=$(elapsed_ms "$(paint_after "$WARM_T0" "$WARM_SIGNATURE")" "$WARM_T0")
+            break
+        fi
+        # A copy Launch Services started separately would answer the next
+        # ask itself, so close it — by PID, sparing this phase's own app,
+        # which shares its executable path and would otherwise be killed too.
+        for stray in $(pgrep -f "$BUNDLE/Contents/MacOS/" 2>/dev/null || true); do
+            [[ "$stray" == "$APP_PID" ]] || kill -9 "$stray" 2>/dev/null || true
+        done
+        kill -0 "$APP_PID" 2>/dev/null || break
+    done
+
+    # The switch is triggered inside the app once the second document joins
+    # the tab group — see DocumentWindowTabber for why a shell script cannot
+    # ask for one.
+    if wait_for_line "FOLIUM_BENCH tab-switch-end" 150; then
+        TAB_T0=$(marker_timestamp "tab-switch-start")
+        TAB_T1=$(marker_timestamp "tab-switch-end")
+        if [[ -n "$TAB_T0" && -n "$TAB_T1" ]]; then
+            TAB_SWITCH_MS=$(elapsed_ms "$TAB_T1" "$TAB_T0")
+            # "no re-render" is the other half of CONTEXT.md's tab-switch
+            # budget: switching tabs must reveal an already-rendered
+            # document, not build one.
+            if awk -v t0="$TAB_T0" -v t1="$TAB_T1" \
+                '$1 == "FOLIUM_BENCH" && $2 == "render-start" && $3 + 0 >= t0 && $3 + 0 <= t1 { found = 1 }
+                 END { exit !found }' "$MARKERS"; then
+                TAB_SWITCH_RERENDERED="yes"
+            fi
+        fi
     fi
 fi
+stop_app
 
-kill -9 "$APP_PID" 2>/dev/null || true
-wait "$APP_PID" 2>/dev/null || true
-APP_PID=""
+# ---------------------------------------------------------------------------
+# Phase 3 — scrolling. Alone, because it holds every animation frame it can
+# get for the duration of the run.
+# ---------------------------------------------------------------------------
+SCROLL_REPORT=""
+start_app "$FIXTURE" scroll
+if wait_for_line "FOLIUM_BENCH paint" 100 \
+    && wait_for_line "FOLIUM_BENCH_REPORT scrolling" 200; then
+    SCROLL_REPORT=$(grep -m1 "^FOLIUM_BENCH_REPORT scrolling " "$MARKERS" \
+        | sed -E 's/^FOLIUM_BENCH_REPORT [^ ]+ //')
+fi
+stop_app
 
 echo "Measurements"
 echo "============"
@@ -256,7 +368,7 @@ echo ""
 if [[ -n "$COLD_LAUNCH_MS" ]]; then
     report_line "Cold launch → first document painted" "$COLD_LAUNCH_MS" "$(budget_ms cold-launch)"
 else
-    report_line "Cold launch → first document painted" "" "" "app did not emit a first-paint marker"
+    report_line "Cold launch → first document painted" "" "" "app never confirmed a paint"
 fi
 
 if [[ -n "$WARM_MS" ]]; then
@@ -269,58 +381,55 @@ fi
 if [[ -n "$RELOAD_MS" ]]; then
     report_line "Live-reload: file written → repainted" "$RELOAD_MS" "$(budget_ms reload-paint)"
 else
-    report_line "Live-reload: file written → repainted" "" "" "app did not emit a reload-paint marker"
+    report_line "Live-reload: file written → repainted" "" "" "no paint followed the write"
 fi
 
-# render, and the permanently-unmeasured moments (warm open, tab switch,
-# scrolling), are moments the app can fully compute and format for itself —
-# see BenchMarker.measure and BenchBudget.unmeasuredReportLines — so this
-# script prints what it said verbatim rather than recomputing any of it. The
-# wire format is "FOLIUM_BENCH_REPORT <event> <pretty line>": the event token
-# is there so this script could look a line up by event if it ever needed to
-# (the same shape budget_ms already reads), not for display, so it has to be
-# stripped along with the literal prefix or it leaks into the printed report.
-# `render` fires twice per run — once for the initial open, again for the
-# live-reload probe — so this keeps only the first line per event (awk
-# `!seen[$2]++`, keyed on the still-present event token before it's
-# stripped), the same "first occurrence is the one being asked about" rule
-# marker_timestamp already applies to FOLIUM_BENCH markers.
-if grep -q "^FOLIUM_BENCH_REPORT " "$MARKERS" 2>/dev/null; then
-    grep "^FOLIUM_BENCH_REPORT " "$MARKERS" | awk '!seen[$2]++' | sed -E 's/^FOLIUM_BENCH_REPORT [^ ]+ //'
+if [[ -n "$TAB_SWITCH_MS" ]]; then
+    report_line "Tab switch" "$TAB_SWITCH_MS" "$(budget_ms tab-switch)"
+    if [[ -n "$TAB_SWITCH_RERENDERED" ]]; then
+        echo "      ^ re-rendered during the switch — the budget says it must not"
+    fi
+else
+    report_line "Tab switch" "" "" "app did not complete a tab-switch probe"
 fi
 
-# Then fill in any moment that never reported, checked one event at a time
-# rather than "did the app report anything at all". The app emits the three
-# permanently-unmeasured lines from `FoliumApp.init`, before it has opened
-# anything, so under FOLIUM_BENCH that prefix is present in almost every
-# run — an all-or-nothing fallback is therefore dead code, and a `render`
-# that never fired (app died early, document never opened) would drop out
-# of the report entirely instead of saying so. A measurement harness has to
-# show a hole, not hide one.
-reported() {
-    grep -q "^FOLIUM_BENCH_REPORT $1 " "$MARKERS" 2>/dev/null
-}
-
-reported render || \
+# The render timing is the one moment the app computes and formats for
+# itself — `BenchMarker.measure` has both ends of it in-process — so this
+# prints what it said rather than recomputing it. Taken from phase 1, which
+# is the phase that opens a document with nothing else going on. The wire
+# format is "FOLIUM_BENCH_REPORT <event> <pretty line>"; the event token is
+# there so a line can be looked up by event, not for display, so it is
+# stripped along with the prefix. `render` fires more than once per phase —
+# the initial open, then the live-reload — and the first is the one being
+# asked about.
+RENDER_REPORT=$(printf '%s\n' "$APP_REPORTS" | grep -m1 "^FOLIUM_BENCH_REPORT render " \
+    | sed -E 's/^FOLIUM_BENCH_REPORT [^ ]+ //' || true)
+if [[ -n "$RENDER_REPORT" ]]; then
+    printf '%s\n' "$RENDER_REPORT"
+else
     report_line "Markdown → HTML render (fixture)" "" "" "renderer did not emit timing"
-reported tab-switch || \
-    report_line "Tab switch" "" "" "requires driving an already-running app's UI"
-reported scrolling || \
+fi
+
+if [[ -n "$SCROLL_REPORT" ]]; then
+    printf '%s\n' "$SCROLL_REPORT"
+else
     report_line "Scrolling / dropped frames" "" "" "probe did not finish"
+fi
 
 echo ""
 echo "Notes"
 echo "====="
 echo "- Cold launch is timed from this script's own wall-clock reading, taken"
-echo "  immediately before exec, to the app's first-paint marker — the only"
+echo "  immediately before exec, to the app's first paint — the only"
 echo "  baseline that includes process spawn, dyld, and AppKit start-up."
 echo "- Live-reload appends a line of text to the fixture (a no-op rewrite"
 echo "  would never repaint, by design) and times from that write to"
-echo "  reload-paint."
+echo "  the paint that follows it."
 echo "- Warm open asks Launch Services to open a second, identical document in"
 echo "  the already-running process, and times that request to the next paint."
-echo "- Tab switch needs an already-running app's UI driven from outside,"
-echo "  which a shell script cannot do honestly."
+echo "- Tab switch is triggered inside the app once the warm-open document"
+echo "  joins the tab group, and timed to a frame drawn in the revealed tab."
+echo "  It also checks that nothing re-rendered during the switch."
 echo "- Scrolling scrolls the real document for ~180 animation frames and"
 echo "  counts frames that missed the display's own interval, inferred from"
 echo "  the run rather than assumed to be 60 Hz. It scrolls by script, so it"

@@ -56,9 +56,14 @@ struct BenchMarker: Sendable {
     /// no shared mutable state, so calling this from several places
     /// concurrently is never a data race, and unit tests can call it in any
     /// order without one leaking into another.
-    func mark(_ event: String) {
+    /// `detail`, when given, is appended as a fourth field. Paints carry the
+    /// size of the body they drew there, which is what lets
+    /// `scripts/bench.sh` tell the repaint it asked for from an unrelated
+    /// view settling at the same moment — both are paints, but only one
+    /// drew different content.
+    func mark(_ event: String, detail: String? = nil) {
         guard isEnabled else { return }
-        writeRaw(Self.formatMarkerLine(event: event, timestamp: now()))
+        writeRaw(Self.formatMarkerLine(event: event, timestamp: now(), detail: detail))
     }
 
     /// Writes `line` verbatim, gated the same way `mark` is. For output that
@@ -99,7 +104,8 @@ struct BenchMarker: Sendable {
 
     /// Formats one marker line. Pure, and kept separate from `mark` so the
     /// wire format can be unit-tested without an environment or a clock.
-    static func formatMarkerLine(event: String, timestamp: Double) -> String {
-        "FOLIUM_BENCH \(event) \(String(format: "%.6f", timestamp))\n"
+    static func formatMarkerLine(event: String, timestamp: Double, detail: String? = nil) -> String {
+        let suffix = detail.map { " \($0)" } ?? ""
+        return "FOLIUM_BENCH \(event) \(String(format: "%.6f", timestamp))\(suffix)\n"
     }
 }

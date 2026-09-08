@@ -12,7 +12,6 @@
 final class MarkdownWebViewState {
     private var isShellLoaded = false
     private var pendingBodyHTML: String?
-    private var hasEmittedFirstPaint = false
     var benchMarker: BenchMarker = BenchMarker()
 
     /// Call when the shell's one-time `WKNavigationDelegate` `didFinish`
@@ -36,49 +35,38 @@ final class MarkdownWebViewState {
         return bodyHTML
     }
 
-    /// Which marker an injection's paint should be confirmed and reported
-    /// under, or `nil` if it shouldn't be confirmed at all: `"first-paint"`
-    /// the first time this is called, `"reload-paint"` every time after,
-    /// `nil` whenever FOLIUM_BENCH is unset. `MarkdownWebView` calls this
-    /// before deciding how to inject — the decision of *whether* and *what*
-    /// to confirm lives here, where it can be unit-tested, while confirming
-    /// a paint for real needs a live `WKWebView` and stays in that excluded
-    /// glue file.
+    /// Whether an injection's paint should be confirmed at all: only under
+    /// FOLIUM_BENCH.
     ///
     /// Confirming a paint chains a second, awaited `WKWebView` call after
-    /// the injection; returning `nil` is what keeps that round trip off a
+    /// the injection; returning `false` is what keeps that round trip off a
     /// real user's launch and live-reload.
+    ///
+    /// Deliberately not "which moment is this?". An earlier version named
+    /// the paint — `first-paint` once per view, `reload-paint` after — and
+    /// it was wrong: SwiftUI settles a document through several web views,
+    /// each with its own state, so a live-reload whose injection landed in a
+    /// freshly created view called itself `first-paint` and the reload
+    /// measurement silently found nothing. Observed in 2 of 3 runs. Every
+    /// paint now reports itself the same way, and `scripts/bench.sh` — which
+    /// holds the wall-clock reading for each thing it asked for — decides
+    /// which request a paint answers.
+    func shouldConfirmPaint() -> Bool {
+        benchMarker.isEnabled
+    }
+
     /// Whether this view should run `MarkdownPage.scrollProbeScript` now
-    /// that it has painted `event`: once per process, only under
-    /// FOLIUM_BENCH, and never after the *first* paint.
+    /// that it has painted: only when this run armed the scroll probe, and
+    /// only for the first view to ask.
     ///
-    /// Once per *process*, not per view, because a single document settles
-    /// through several web views as SwiftUI re-evaluates its scene, and a
-    /// probe that scrolled each of them would report one run's numbers
-    /// several times over — and would keep scrolling views the user is
-    /// looking at.
-    ///
-    /// Not after the first paint because `scripts/bench.sh` times a
-    /// live-reload immediately after that one, and the two probes ruin each
-    /// other when they overlap: the scroll probe takes the animation frames
-    /// the repaint needs, so the repaint misses its window and reports
-    /// nothing, while the repaint lands mid-scroll and counts as dropped
-    /// frames. Waiting for the reload's own repaint puts them in sequence.
-    func shouldRunScrollProbe(after event: String) -> Bool {
-        guard benchMarker.isEnabled, event != "first-paint" else { return false }
-        return Self.scrollProbeClaim.claim()
+    /// Once per process rather than per view because SwiftUI settles one
+    /// document through several web views, each with its own state, and a
+    /// probe per view would scroll the document several times over and
+    /// report each run's numbers again.
+    static func shouldRunScrollProbe(probe: BenchProbe = BenchProbe.current()) -> Bool {
+        guard probe == .scroll else { return false }
+        return scrollProbeClaim.claim()
     }
 
-    /// One-shot across every instance. `MarkdownWebView` creates a state per
-    /// web view, so the "already ran" bit cannot live in an instance.
     private static let scrollProbeClaim = OneShot()
-
-    func paintEventToConfirm() -> String? {
-        guard benchMarker.isEnabled else { return nil }
-        guard hasEmittedFirstPaint else {
-            hasEmittedFirstPaint = true
-            return "first-paint"
-        }
-        return "reload-paint"
-    }
 }

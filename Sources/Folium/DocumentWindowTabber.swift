@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 /// Files every document window into Folium's single native tab group, so
 /// opening several Markdown files at once reads the way Safari/Finder/Xcode
@@ -54,6 +55,76 @@ struct DocumentWindowTabber: NSViewRepresentable {
         target?.addTabbedWindow(window, ordered: .above)
     }
 
+    /// Switches tabs once, under FOLIUM_BENCH only, and marks both ends so
+    /// `scripts/bench.sh` can time it and check that nothing re-rendered.
+    ///
+    /// Here rather than in the script because a tab switch is not something
+    /// an outside process can ask for: `open` reaches Launch Services, but
+    /// selecting a tab is an AppKit call on a window this app owns, and
+    /// synthesising the keystroke instead would need accessibility
+    /// permission the harness cannot assume.
+    ///
+    /// The end of the switch is a *frame*, confirmed through
+    /// `MarkdownPage.paintConfirmationScript` in the tab being switched to.
+    /// A tab switch deliberately does not re-render — that is half of what
+    /// `CONTEXT.md` budgets — so there is no injection to hang the timing
+    /// on, and the newly revealed web view drawing a frame is the only
+    /// honest signal that the switch is visible to the user.
+    @MainActor
+    static func runTabSwitchProbeIfBenching(_ window: NSWindow) {
+        let marker = BenchMarker()
+        // Two *documents*, not two windows. SwiftUI settles a single open
+        // document through more than one window, so a window count reaches 2
+        // during the cold launch, before the second document is ever opened.
+        guard marker.isEnabled,
+              BenchProbe.current() == .tabSwitch,
+              NSDocumentController.shared.documents.count >= 2,
+              let group = window.tabGroup,
+              group.windows.count >= 2,
+              let target = group.windows.first(where: { $0 !== group.selectedWindow }),
+              tabSwitchProbeClaim.claim()
+        else { return }
+
+        Task { @MainActor in
+            // The window that just joined the group is still settling —
+            // measuring a switch into a tab mid-layout would time the
+            // layout, not the switch.
+            try? await Task.sleep(for: .milliseconds(750))
+            marker.mark("tab-switch-start")
+            group.selectedWindow = target
+            // No end marker without a confirmed frame. Marking one anyway
+            // when the revealed tab has no web view to ask would report the
+            // cost of setting `selectedWindow` and nothing else — 2 ms for a
+            // switch that really takes tens of them. `scripts/bench.sh`
+            // prints "not measured" when this marker never arrives, which is
+            // the honest answer.
+            guard let webView = firstWebView(in: target) else { return }
+            _ = try? await webView.callAsyncJavaScript(
+                MarkdownPage.paintConfirmationScript,
+                contentWorld: .page
+            )
+            marker.mark("tab-switch-end")
+        }
+    }
+
+    /// One probe per process: `adopt` runs for every window that joins the
+    /// group, and only the first switch is a cold one.
+    private static let tabSwitchProbeClaim = OneShot()
+
+    /// SwiftUI owns the view tree, so the web view inside a document window
+    /// can only be found by looking for it.
+    @MainActor
+    private static func firstWebView(in window: NSWindow) -> WKWebView? {
+        func search(_ view: NSView) -> WKWebView? {
+            if let webView = view as? WKWebView { return webView }
+            for subview in view.subviews {
+                if let found = search(subview) { return found }
+            }
+            return nil
+        }
+        return window.contentView.flatMap(search)
+    }
+
     /// A zero-size view whose only job is to report the window it landed in.
     ///
     /// The work happens in `viewDidMoveToWindow` rather than on a later
@@ -65,6 +136,7 @@ struct DocumentWindowTabber: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             DocumentWindowTabber.adopt(window, orderedWindows: NSApp.orderedWindows)
+            DocumentWindowTabber.runTabSwitchProbeIfBenching(window)
         }
     }
 }

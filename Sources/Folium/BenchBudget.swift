@@ -13,7 +13,8 @@ struct BenchBudget {
     static let budgets: [String: Double] = [
         "cold-launch": 500,      // Cold launch → first document painted
         "warm-open": 150,        // Warm open (app already running) → painted
-        "reload-paint": 100      // Live-reload: file written → repainted
+        "reload-paint": 100,     // Live-reload: file written → repainted
+        "tab-switch": 50         // Tab switch (and no re-render)
         // "render" has no budget — it's informational
     ]
 
@@ -25,15 +26,6 @@ struct BenchBudget {
         "warm-open": "Warm open (app already running) → painted",
         "tab-switch": "Tab switch",
         "scrolling": "Scrolling / dropped frames"
-    ]
-
-    /// Why each permanently-unmeasured moment can't be measured.
-    ///
-    /// `warm-open` is deliberately not here: `scripts/bench.sh` measures it
-    /// by asking Launch Services to open a second document in the running
-    /// app, the same way cold launch is measured from outside the process.
-    static let unmeasuredReasons: [String: String] = [
-        "tab-switch": "requires driving an already-running app's UI"
     ]
 
     /// Lookup the budget for an event in milliseconds, or nil if unmeasured.
@@ -105,25 +97,4 @@ struct BenchBudget {
         return scrollReportLine(dropped: dropped, measured: measured, refreshHz: refreshHz)
     }
 
-    /// Format a line for an unmeasured moment.
-    static func reportLineUnmeasured(event: String, reason: String) -> String {
-        let name = names[event] ?? event
-        let dots = max(1, 60 - name.count - 12) // "not measured" is ~12 chars
-        let padding = String(repeating: ".", count: dots)
-        return "  \(name)\(padding) not measured (\(reason))"
-    }
-
-    /// The permanently-unmeasured moments, pre-formatted and prefixed for
-    /// `BenchMarker.writeLine`: `FOLIUM_BENCH_REPORT <event> <line>` — the
-    /// same wire format `BenchMarker.measure` uses for `render`, so
-    /// `scripts/bench.sh` can look either kind up by event and fall back
-    /// per-event if one is missing. Emitted at launch rather than
-    /// hardcoded in the script: none of them depend on anything that
-    /// happens at runtime.
-    static func unmeasuredReportLines() -> [String] {
-        unmeasuredReasons.keys.sorted().map { event in
-            let line = reportLineUnmeasured(event: event, reason: unmeasuredReasons[event] ?? "")
-            return "FOLIUM_BENCH_REPORT \(event) \(line)"
-        }
-    }
 }

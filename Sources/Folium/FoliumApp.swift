@@ -12,12 +12,12 @@ struct FoliumApp: App {
 
     // `App.init()` runs exactly once, unconditionally, as part of SwiftUI's
     // own launch sequence — unlike a top-level `let`, which only runs if
-    // something later touches it. `BenchBudget`'s tables have nothing to
-    // wait on, so this is where `scripts/bench.sh` gets them instead of
-    // keeping its own copy.
+    // something later touches it. `BenchBudget.budgets` has nothing to wait
+    // on, so this is where `scripts/bench.sh` reads the budgets instead of
+    // keeping its own copy of them.
     init() {
         let marker = BenchMarker()
-        for line in BenchBudget.budgetTableLines() + BenchBudget.unmeasuredReportLines() {
+        for line in BenchBudget.budgetTableLines() {
             marker.writeLine(line)
         }
     }

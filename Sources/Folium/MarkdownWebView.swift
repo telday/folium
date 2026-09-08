@@ -69,7 +69,7 @@ struct MarkdownWebView: NSViewRepresentable {
         /// and does wait, on its `await`s.
         func inject(_ bodyHTML: String, into webView: WKWebView) {
             let script = MarkdownPage.renderBodyScript(bodyHTML: bodyHTML)
-            guard let event = state.paintEventToConfirm() else {
+            guard state.shouldConfirmPaint() else {
                 webView.evaluateJavaScript(script)
                 return
             }
@@ -79,13 +79,18 @@ struct MarkdownWebView: NSViewRepresentable {
                         MarkdownPage.paintConfirmationScript,
                         contentWorld: .page
                     )
-                    state.benchMarker.mark(event)
+                    // The body's size identifies *what* was drawn. A live
+                    // reload changes the document, so its repaint carries a
+                    // different size than the paint before it; a view that
+                    // is merely settling redraws the same body at the same
+                    // size, and the script can tell them apart.
+                    state.benchMarker.mark("paint", detail: String(bodyHTML.count))
 
                     // The scroll probe runs after the paint it follows, not
                     // instead of it: it scrolls the real document for ~180
                     // frames, so starting it any earlier would be measuring
                     // a document still being drawn.
-                    guard state.shouldRunScrollProbe(after: event) else { return }
+                    guard MarkdownWebViewState.shouldRunScrollProbe() else { return }
                     let result = try? await webView.callAsyncJavaScript(
                         MarkdownPage.scrollProbeScript,
                         contentWorld: .page

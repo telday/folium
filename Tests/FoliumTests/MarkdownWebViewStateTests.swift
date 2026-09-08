@@ -40,56 +40,43 @@ struct MarkdownWebViewStateTests {
         #expect(state.shellDidFinishLoading() == nil)
     }
 
-    @Test func paintEventToConfirmIsNilWhenBenchIsDisabled() {
+    @Test func doesNotConfirmPaintsWhenBenchIsDisabled() {
         // A real user's launch and every one of their live-reloads must
         // never pay for the paint-confirmation round trip.
         let state = MarkdownWebViewState()
         state.benchMarker = BenchMarker(getenv: { _ in nil })
 
-        #expect(state.paintEventToConfirm() == nil)
-        #expect(state.paintEventToConfirm() == nil)
+        #expect(!state.shouldConfirmPaint())
     }
 
-    @Test func paintEventToConfirmIsFirstPaintOnceThenReloadPaint() {
+    @Test func confirmsEveryPaintUnderBench() {
         let state = MarkdownWebViewState()
         state.benchMarker = BenchMarker(getenv: { $0 == "FOLIUM_BENCH" ? "1" : nil })
 
-        #expect(state.paintEventToConfirm() == "first-paint")
-        #expect(state.paintEventToConfirm() == "reload-paint")
-        #expect(state.paintEventToConfirm() == "reload-paint")
+        // Every paint, not just the first: naming them per view is what
+        // broke the live-reload measurement, because a reload whose
+        // injection landed in a newly created view called itself the first
+        // paint. `scripts/bench.sh` matches paints to requests instead.
+        #expect(state.shouldConfirmPaint())
+        #expect(state.shouldConfirmPaint())
     }
 
-    @Test func doesNotRunTheScrollProbeWhenBenchIsDisabled() {
-        let state = MarkdownWebViewState()
-        state.benchMarker = BenchMarker(getenv: { _ in nil })
+    /// The probe a run armed decides this, not anything the app infers from
+    /// its own paints. An earlier version watched for the paint that drew
+    /// different content, to place itself after the live-reload measurement;
+    /// SwiftUI settling a document through a varying number of web views
+    /// kept breaking that inference, so `scripts/bench.sh` — which knows
+    /// what it asked for — says which probe to run instead.
+    ///
+    /// One test, not several: the claim is process-wide by design, so a
+    /// second test exercising it would race this one for the single claim.
+    @Test func runsTheScrollProbeOnlyForTheRunThatArmedItAndOnlyOnce() {
+        #expect(!MarkdownWebViewState.shouldRunScrollProbe(probe: .none))
+        #expect(!MarkdownWebViewState.shouldRunScrollProbe(probe: .tabSwitch))
 
-        #expect(!state.shouldRunScrollProbe(after: "reload-paint"))
-    }
-
-    /// The first paint is immediately followed by the live-reload
-    /// measurement, and a scroll probe running through it would spoil both.
-    @Test func doesNotRunTheScrollProbeOnTheFirstPaint() {
-        let state = MarkdownWebViewState()
-        state.benchMarker = BenchMarker(getenv: { $0 == "FOLIUM_BENCH" ? "1" : nil })
-
-        #expect(!state.shouldRunScrollProbe(after: "first-paint"))
-    }
-
-    /// One probe per process, not per view: SwiftUI settles a single document
-    /// through several web views, each with its own state.
-    @Test func runsTheScrollProbeForOnlyOneStateInTheProcess() {
-        let enabled = { BenchMarker(getenv: { $0 == "FOLIUM_BENCH" ? "1" : nil }) }
-        let first = MarkdownWebViewState()
-        first.benchMarker = enabled()
-        let second = MarkdownWebViewState()
-        second.benchMarker = enabled()
-
-        let claims = [
-            first.shouldRunScrollProbe(after: "reload-paint"),
-            first.shouldRunScrollProbe(after: "reload-paint"),
-            second.shouldRunScrollProbe(after: "reload-paint")
-        ]
-
-        #expect(claims.filter { $0 }.count <= 1)
+        #expect(MarkdownWebViewState.shouldRunScrollProbe(probe: .scroll))
+        // Once per process, however many views paint afterwards.
+        #expect(!MarkdownWebViewState.shouldRunScrollProbe(probe: .scroll))
+        #expect(!MarkdownWebViewState.shouldRunScrollProbe(probe: .scroll))
     }
 }

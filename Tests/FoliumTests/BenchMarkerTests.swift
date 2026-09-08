@@ -187,4 +187,28 @@ private final class Counter: @unchecked Sendable {
     func increment() {
         total += 1
     }
+
+    /// Paints carry the size of the body they drew, which is what lets
+    /// `scripts/bench.sh` tell a repaint from a view settling on the same
+    /// content at the same moment.
+    @Test func markAppendsADetailFieldWhenGivenOne() {
+        let sink = RecordingSink()
+        let marker = BenchMarker(
+            now: { 7.0 },
+            getenv: { $0 == "FOLIUM_BENCH" ? "1" : nil },
+            write: sink.record
+        )
+
+        marker.mark("paint", detail: "4096")
+
+        #expect(String(data: sink.writes[0], encoding: .utf8) == "FOLIUM_BENCH paint 7.000000 4096\n")
+    }
+
+    @Test func formatMarkerLineOmitsTheDetailFieldWhenThereIsNone() {
+        #expect(BenchMarker.formatMarkerLine(event: "paint", timestamp: 7) == "FOLIUM_BENCH paint 7.000000\n")
+        #expect(
+            BenchMarker.formatMarkerLine(event: "paint", timestamp: 7, detail: "12")
+                == "FOLIUM_BENCH paint 7.000000 12\n"
+        )
+    }
 }
