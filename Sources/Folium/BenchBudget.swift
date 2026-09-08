@@ -12,6 +12,7 @@ struct BenchBudget {
     /// are enforced; others are measured but not gated.
     static let budgets: [String: Double] = [
         "cold-launch": 500,      // Cold launch → first document painted
+        "warm-open": 150,        // Warm open (app already running) → painted
         "reload-paint": 100      // Live-reload: file written → repainted
         // "render" has no budget — it's informational
     ]
@@ -27,10 +28,12 @@ struct BenchBudget {
     ]
 
     /// Why each permanently-unmeasured moment can't be measured.
+    ///
+    /// `warm-open` is deliberately not here: `scripts/bench.sh` measures it
+    /// by asking Launch Services to open a second document in the running
+    /// app, the same way cold launch is measured from outside the process.
     static let unmeasuredReasons: [String: String] = [
-        "warm-open": "requires driving an already-running app's UI",
-        "tab-switch": "requires driving an already-running app's UI",
-        "scrolling": "out of scope for this fixture"
+        "tab-switch": "requires driving an already-running app's UI"
     ]
 
     /// Lookup the budget for an event in milliseconds, or nil if unmeasured.
@@ -39,10 +42,10 @@ struct BenchBudget {
     }
 
     /// One line per budgeted moment, in the wire format `scripts/bench.sh`
-    /// parses: `FOLIUM_BENCH_BUDGET <event> <milliseconds>`. `cold-launch`
-    /// and `reload-paint` both need a wall-clock reading the script takes
-    /// from outside this process, so the script — not this type — is what
-    /// ends up comparing them to budget. Emitting this table under
+    /// parses: `FOLIUM_BENCH_BUDGET <event> <milliseconds>`. `cold-launch`,
+    /// `reload-paint`, and `warm-open` all need a wall-clock reading the
+    /// script takes from outside this process, so the script — not this
+    /// type — is what ends up comparing them to budget. Emitting this table under
     /// FOLIUM_BENCH is what lets the script read the numbers here instead of
     /// keeping a second, hand-synced copy of `budgets`.
     static func budgetTableLines() -> [String] {
@@ -76,6 +79,30 @@ struct BenchBudget {
         let dots = max(1, 60 - name.count - String(format: "%.0f", measuredMs).count)
         let padding = String(repeating: ".", count: dots)
         return "  \(name)\(padding) \(Int(measuredMs)) ms  \(status)\(suffix)"
+    }
+
+    /// Format the scrolling line. Scrolling is the one budgeted moment whose
+    /// budget is not a duration — `CONTEXT.md` asks for "no dropped frames,
+    /// including 120 Hz ProMotion" — so it passes on a count, not a
+    /// comparison against `budgets`, and reports the refresh rate it held
+    /// the run to so a pass at 60 Hz can't be mistaken for a pass at 120.
+    static func scrollReportLine(dropped: Int, measured: Int, refreshHz: Int) -> String {
+        let name = names["scrolling"] ?? "scrolling"
+        let detail = "\(dropped)/\(measured) frames dropped @ \(refreshHz) Hz"
+        let status = dropped == 0 ? "✓" : "✗"
+        let dots = max(1, 60 - name.count - detail.count)
+        return "  \(name)\(String(repeating: ".", count: dots)) \(detail)  \(status)"
+    }
+
+    /// Builds the scrolling line from `MarkdownPage.scrollProbeScript`'s
+    /// return value, or `nil` if it isn't shaped as expected. JavaScript
+    /// numbers cross into Swift as `NSNumber`, not `Int`, so a direct
+    /// `as? Int` would fail on values that are perfectly good integers.
+    static func scrollReportLine(from result: [String: Any]) -> String? {
+        guard let measured = (result["measured"] as? NSNumber)?.intValue,
+              let dropped = (result["dropped"] as? NSNumber)?.intValue,
+              let refreshHz = (result["hz"] as? NSNumber)?.intValue else { return nil }
+        return scrollReportLine(dropped: dropped, measured: measured, refreshHz: refreshHz)
     }
 
     /// Format a line for an unmeasured moment.

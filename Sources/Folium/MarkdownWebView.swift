@@ -80,6 +80,19 @@ struct MarkdownWebView: NSViewRepresentable {
                         contentWorld: .page
                     )
                     state.benchMarker.mark(event)
+
+                    // The scroll probe runs after the paint it follows, not
+                    // instead of it: it scrolls the real document for ~180
+                    // frames, so starting it any earlier would be measuring
+                    // a document still being drawn.
+                    guard state.shouldRunScrollProbe(after: event) else { return }
+                    let result = try? await webView.callAsyncJavaScript(
+                        MarkdownPage.scrollProbeScript,
+                        contentWorld: .page
+                    )
+                    guard let values = result as? [String: Any],
+                          let line = BenchBudget.scrollReportLine(from: values) else { return }
+                    state.benchMarker.writeLine("FOLIUM_BENCH_REPORT scrolling \(line)")
                 }
             }
         }

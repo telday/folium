@@ -48,6 +48,31 @@ final class MarkdownWebViewState {
     /// Confirming a paint chains a second, awaited `WKWebView` call after
     /// the injection; returning `nil` is what keeps that round trip off a
     /// real user's launch and live-reload.
+    /// Whether this view should run `MarkdownPage.scrollProbeScript` now
+    /// that it has painted `event`: once per process, only under
+    /// FOLIUM_BENCH, and never after the *first* paint.
+    ///
+    /// Once per *process*, not per view, because a single document settles
+    /// through several web views as SwiftUI re-evaluates its scene, and a
+    /// probe that scrolled each of them would report one run's numbers
+    /// several times over — and would keep scrolling views the user is
+    /// looking at.
+    ///
+    /// Not after the first paint because `scripts/bench.sh` times a
+    /// live-reload immediately after that one, and the two probes ruin each
+    /// other when they overlap: the scroll probe takes the animation frames
+    /// the repaint needs, so the repaint misses its window and reports
+    /// nothing, while the repaint lands mid-scroll and counts as dropped
+    /// frames. Waiting for the reload's own repaint puts them in sequence.
+    func shouldRunScrollProbe(after event: String) -> Bool {
+        guard benchMarker.isEnabled, event != "first-paint" else { return false }
+        return Self.scrollProbeClaim.claim()
+    }
+
+    /// One-shot across every instance. `MarkdownWebView` creates a state per
+    /// web view, so the "already ran" bit cannot live in an instance.
+    private static let scrollProbeClaim = OneShot()
+
     func paintEventToConfirm() -> String? {
         guard benchMarker.isEnabled else { return nil }
         guard hasEmittedFirstPaint else {

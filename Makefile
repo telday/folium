@@ -149,7 +149,7 @@ verify-bundle:
 ## `open`, because it has to read that process's own stderr.
 bench: bundle
 	./scripts/make-bench-fixture.sh
-	./scripts/bench.sh .build/bench/fixture.md "$(CONTENTS)/MacOS/$(APP_NAME)"
+	./scripts/bench.sh .build/bench/fixture.md "$(APP_BUNDLE)"
 
 ## Install the bundle to /Applications.
 install: bundle

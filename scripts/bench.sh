@@ -15,16 +15,38 @@
 set -euo pipefail
 
 FIXTURE="${1:-.build/bench/fixture.md}"
-BINARY="${2:?usage: bench.sh <fixture> <binary> — the Makefile passes the executable inside \$(APP_BUNDLE)}"
+BUNDLE="${2:?usage: bench.sh <fixture> <app-bundle> — the Makefile passes \$(APP_BUNDLE)}"
 
 if [[ ! -f "$FIXTURE" ]]; then
     echo "Error: fixture not found at $FIXTURE" >&2
     exit 1
 fi
-if [[ ! -x "$BINARY" ]]; then
-    echo "Error: binary not found at $BINARY" >&2
+if [[ ! -d "$BUNDLE" ]]; then
+    echo "Error: app bundle not found at $BUNDLE" >&2
     exit 1
 fi
+# Absolute, because the warm-open probe hands this to `open`, which resolves
+# a bare relative path as an application *name* to look up rather than a
+# path on disk, and fails.
+BUNDLE="$(cd "$(dirname "$BUNDLE")" && pwd)/$(basename "$BUNDLE")"
+
+# The bundle, not just the executable, because the warm-open probe below
+# hands the .app to `open`. The executable name comes from the Info.plist
+# rather than being assumed to match the bundle's, which is the same source
+# Launch Services reads.
+BINARY="$BUNDLE/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$BUNDLE/Contents/Info.plist")"
+if [[ ! -x "$BINARY" ]]; then
+    echo "Error: bundle executable not found at $BINARY" >&2
+    exit 1
+fi
+
+# Warm open has to open a *different* document: asking Launch Services to
+# open a file that is already open just brings its window forward, with no
+# new document, no render, and no paint. Copied before the live-reload probe
+# below appends to $FIXTURE, so the two documents are byte-identical and the
+# two measurements are comparable.
+WARM_FIXTURE="${FIXTURE%.md}-warm.md"
+cp "$FIXTURE" "$WARM_FIXTURE"
 
 MARKERS=$(mktemp)
 APP_PID=""
@@ -64,6 +86,51 @@ wait_for_line() {
 # asking about.
 marker_timestamp() {
     grep -m1 "^FOLIUM_BENCH $1 " "$MARKERS" | awk '{print $3}'
+}
+
+# Prints the timestamp of the first "FOLIUM_BENCH <event> <ts>" marker at or
+# after $2. The warm-open probe needs this rather than marker_timestamp: by
+# the time it runs, `first-paint` has already fired for the cold document,
+# and the question is which paint came after the request, not which came
+# first.
+marker_timestamp_after() {
+    awk -v ev="$1" -v t0="$2" \
+        '$1 == "FOLIUM_BENCH" && $2 == ev && $3 + 0 >= t0 { print $3; exit }' "$MARKERS"
+}
+
+# Polls for a marker of $1 at or after $2, up to $3 tenths of a second.
+wait_for_marker_after() {
+    local event="$1" after="$2" timeout_tenths="$3"
+    for ((i = 0; i < timeout_tenths; i++)); do
+        if [[ -n "$(marker_timestamp_after "$event" "$after")" ]]; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+# Waits until no new marker has arrived for $1 tenths of a second, giving up
+# after $2. SwiftUI re-evaluates a document's view tree several times while a
+# window settles, and each new web view paints — so a warm-open reading taken
+# while that is still happening would attribute the cold document's trailing
+# paint to the warm open and understate it. Waiting for quiet first is what
+# makes "the next paint after the request" mean the document just requested.
+wait_for_quiet() {
+    local quiet_tenths="$1" timeout_tenths="$2" last="" stable=0
+    for ((i = 0; i < timeout_tenths; i++)); do
+        local count
+        count=$(wc -l < "$MARKERS" 2>/dev/null || echo 0)
+        if [[ "$count" == "$last" ]]; then
+            stable=$((stable + 1))
+            [[ $stable -ge $quiet_tenths ]] && return 0
+        else
+            stable=0
+            last="$count"
+        fi
+        sleep 0.1
+    done
+    return 1
 }
 
 # $1 - $2, in whole milliseconds. Both are wall-clock seconds since the Unix
@@ -146,6 +213,38 @@ if [[ -n "$COLD_LAUNCH_MS" ]]; then
     fi
 fi
 
+# The scroll probe runs inside the app, in the first document's web view,
+# and takes ~180 animation frames to finish. Waited out *here*, before the
+# warm-open probe below opens a second document: that document's window
+# would cover the one being scrolled, and WebKit stops running animation
+# frames for a window that isn't on screen, so the probe would stall
+# part-way through and never report.
+if [[ -n "$COLD_LAUNCH_MS" ]]; then
+    for _ in $(seq 1 150); do
+        grep -q "^FOLIUM_BENCH_REPORT scrolling " "$MARKERS" 2>/dev/null && break
+        sleep 0.1
+    done
+fi
+
+# Warm open. Launch Services delivers this to the process already running —
+# verified: the PID is unchanged and the new document's markers arrive on the
+# same stderr stream — which is what makes it a warm open rather than a
+# second cold launch. `open` returns as soon as the event is dispatched, so
+# $WARM_T0 is taken before the call and the paint is found by timestamp.
+#
+# Timed against `first-paint` because a new document window means a new
+# `MarkdownWebViewState`, and each one calls its own first injection
+# `first-paint`; the marker names a view's first paint, not the app's.
+WARM_MS=""
+if [[ -n "$COLD_LAUNCH_MS" ]]; then
+    wait_for_quiet 8 100 || true
+    WARM_T0=$(wall_clock)
+    open -a "$BUNDLE" "$WARM_FIXTURE"
+    if wait_for_marker_after "first-paint" "$WARM_T0" 100; then
+        WARM_MS=$(elapsed_ms "$(marker_timestamp_after "first-paint" "$WARM_T0")" "$WARM_T0")
+    fi
+fi
+
 kill -9 "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true
 APP_PID=""
@@ -158,6 +257,13 @@ if [[ -n "$COLD_LAUNCH_MS" ]]; then
     report_line "Cold launch → first document painted" "$COLD_LAUNCH_MS" "$(budget_ms cold-launch)"
 else
     report_line "Cold launch → first document painted" "" "" "app did not emit a first-paint marker"
+fi
+
+if [[ -n "$WARM_MS" ]]; then
+    report_line "Warm open (app already running) → painted" "$WARM_MS" "$(budget_ms warm-open)"
+else
+    report_line "Warm open (app already running) → painted" "" "" \
+        "app did not paint a second document"
 fi
 
 if [[ -n "$RELOAD_MS" ]]; then
@@ -197,12 +303,10 @@ reported() {
 
 reported render || \
     report_line "Markdown → HTML render (fixture)" "" "" "renderer did not emit timing"
-reported warm-open || \
-    report_line "Warm open (app already running) → painted" "" "" "requires driving an already-running app's UI"
 reported tab-switch || \
     report_line "Tab switch" "" "" "requires driving an already-running app's UI"
 reported scrolling || \
-    report_line "Scrolling / dropped frames" "" "" "out of scope for this fixture"
+    report_line "Scrolling / dropped frames" "" "" "probe did not finish"
 
 echo ""
 echo "Notes"
@@ -213,9 +317,14 @@ echo "  baseline that includes process spawn, dyld, and AppKit start-up."
 echo "- Live-reload appends a line of text to the fixture (a no-op rewrite"
 echo "  would never repaint, by design) and times from that write to"
 echo "  reload-paint."
-echo "- Warm open and tab switch need an already-running app's UI driven from"
-echo "  outside, which a shell script cannot do honestly."
-echo "- Scrolling / dropped frames is out of scope for this fixture."
+echo "- Warm open asks Launch Services to open a second, identical document in"
+echo "  the already-running process, and times that request to the next paint."
+echo "- Tab switch needs an already-running app's UI driven from outside,"
+echo "  which a shell script cannot do honestly."
+echo "- Scrolling scrolls the real document for ~180 animation frames and"
+echo "  counts frames that missed the display's own interval, inferred from"
+echo "  the run rather than assumed to be 60 Hz. It scrolls by script, so it"
+echo "  measures drawing the moving document, not the input pipeline."
 echo "- Measured against the executable inside the real signed .app that"
 echo "  \`make bundle\`/\`make install\` produce, run directly so this script"
 echo "  can read its stderr — see the Makefile's bench recipe."

@@ -192,4 +192,26 @@ struct MarkdownPageTests {
         #expect(script.contains(#"a\"b\\c"#))
         #expect(!script.contains(#""a"b\c""#))
     }
+
+    /// The probe has to report all three fields `BenchBudget
+    /// .scrollReportLine(from:)` reads, and infer the frame interval from
+    /// the run rather than assuming 60 Hz — otherwise a 120 Hz display would
+    /// pass while dropping every other frame.
+    @Test func scrollProbeScriptReportsFramesDroppedAgainstAnObservedInterval() {
+        let script = MarkdownPage.scrollProbeScript
+
+        #expect(script.contains("requestAnimationFrame"))
+        #expect(script.contains("measured:"))
+        #expect(script.contains("dropped:"))
+        #expect(script.contains("hz:"))
+        // The interval comes from the sorted samples, not a literal 16.67.
+        #expect(script.contains("sorted[Math.floor(sorted.length * 0.1)]"))
+        #expect(!script.contains("16.67"))
+    }
+
+    /// A document scrolled past its end stops painting new content, so idle
+    /// frames would dilute the count.
+    @Test func scrollProbeScriptWrapsBackToTheTopAtTheEndOfTheDocument() {
+        #expect(MarkdownPage.scrollProbeScript.contains("window.scrollTo(0, 0)"))
+    }
 }
