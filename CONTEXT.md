@@ -122,6 +122,10 @@ These are **binding design constraints**, not aspirations.
 - Any change touching the render path states its latency impact and runs
   `make bench`.
 - Knowingly exceeding a budget requires an ADR. Not a shrug.
+- The table says what the app owes, not what it does today: as of the first
+  run of `make bench`, four of the five are over — see issue #48. Scrolling
+  is the one within budget, and only at 63 Hz; the ProMotion half is
+  untested.
 
 ### 3. GitHub fidelity, inside the document
 
