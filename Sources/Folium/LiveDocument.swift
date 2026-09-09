@@ -20,6 +20,15 @@ final class LiveDocument: ObservableObject {
     /// The rendered document body, ready to hand to `MarkdownWebView`.
     @Published private(set) var bodyHTML: String
 
+    /// The directory the document's file sits in, or `nil` for a document
+    /// with nothing on disk. Issue #18's two halves both resolve against
+    /// this and have to agree on it: `DocumentRelativeLinks` rewrites a
+    /// relative reference to be relative to this directory, and the
+    /// `folium-doc:` handler `MarkdownWebView` registers resolves that
+    /// reference back against the same one. Derived here so there is one
+    /// answer rather than two that could drift.
+    let documentDirectory: URL?
+
     private let fileURL: URL?
     private var coalescer: ReloadCoalescer?
     private var watcher: FileWatcher?
@@ -35,9 +44,8 @@ final class LiveDocument: ObservableObject {
         scheduler: any ReloadScheduler = SleepingReloadScheduler()
     ) {
         self.fileURL = fileURL
-        bodyHTML = benchMarker.measure("render-start", "render-end", reportAs: "render") {
-            MarkdownRenderer.renderHTML(from: text)
-        }
+        documentDirectory = fileURL?.deletingLastPathComponent()
+        bodyHTML = LiveDocument.rendered(from: text, documentDirectory: documentDirectory)
 
         guard let fileURL else { return }
         coalescer = ReloadCoalescer(scheduler: scheduler) { [weak self] in
@@ -70,9 +78,7 @@ final class LiveDocument: ObservableObject {
         guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
         guard let text = try? MarkdownLoading.text(fromUTF8: data) else { return }
 
-        let rendered = benchMarker.measure("render-start", "render-end", reportAs: "render") {
-            MarkdownRenderer.renderHTML(from: text)
-        }
+        let rendered = LiveDocument.rendered(from: text, documentDirectory: documentDirectory)
         // `touch`, chmod, or a save of unchanged bytes: no publish, no
         // injection into the web view, no repaint.
         guard rendered != bodyHTML else { return }
@@ -81,5 +87,24 @@ final class LiveDocument: ObservableObject {
         // actually landed, not here — see `MarkdownWebViewState
         // .paintEventToConfirm`. Publishing this is the trigger, not the
         // measured moment.
+    }
+
+    /// Renders `text`, and resolves its `src`/`href` values against
+    /// `documentDirectory` so sibling images and links work
+    /// (`DocumentRelativeLinks`, issue #18).
+    ///
+    /// `DocumentGroup` can hand over a document with nothing on disk. That
+    /// one has no directory to resolve against, so its relative references
+    /// are left as the render produced them.
+    ///
+    /// Resolving happens inside the measured region, not beside it: it is
+    /// part of what producing body HTML costs, and the `render` budget in
+    /// `CONTEXT.md` is the budget for that whole cost.
+    private static func rendered(from text: String, documentDirectory: URL?) -> String {
+        benchMarker.measure("render-start", "render-end", reportAs: "render") {
+            let html = MarkdownRenderer.renderHTML(from: text)
+            guard let documentDirectory else { return html }
+            return DocumentRelativeLinks.resolve(html, relativeTo: documentDirectory)
+        }
     }
 }

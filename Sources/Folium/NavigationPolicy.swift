@@ -21,6 +21,11 @@ enum NavigationDecision: Equatable {
     case allow
     case openInBrowser(URL)
     case scrollToAnchor(String)
+    /// A link to a sibling Markdown file (issue #18), carrying the real path
+    /// `decide` recovered from the `folium-doc:` URL. The delegate cancels
+    /// the navigation and hands this to `NSWorkspace`, the way
+    /// `openInBrowser` hands an http(s) URL to the user's browser.
+    case openDocument(URL)
     case block
 }
 
@@ -29,10 +34,15 @@ enum NavigationDecision: Equatable {
 /// function rather than grown inside `MarkdownWebView.swift`'s excluded
 /// glue — see `docs/agents/definition-of-done.md`.
 enum NavigationPolicy {
-    /// - Parameter shellURL: `MarkdownPage.pageURL`, the shell's own address.
-    ///   A request whose URL matches this one, fragment aside, is the shell
-    ///   navigating to (or within) itself rather than following a link.
-    static func decide(_ request: NavigationRequest, shellURL: URL) -> NavigationDecision {
+    /// - Parameters:
+    ///   - shellURL: `MarkdownPage.pageURL`, the shell's own address. A
+    ///     request whose URL matches this one, fragment aside, is the shell
+    ///     navigating to (or within) itself rather than following a link.
+    ///   - documentDirectory: the open document's own directory, needed to
+    ///     resolve a `folium-doc:` link back to the real file it names. `nil`
+    ///     for a document with nothing on disk, which has no such links to
+    ///     resolve in the first place.
+    static func decide(_ request: NavigationRequest, shellURL: URL, documentDirectory: URL?) -> NavigationDecision {
         guard let url = request.url else { return .block }
 
         if url.scheme == "http" || url.scheme == "https" {
@@ -50,13 +60,58 @@ enum NavigationPolicy {
             if !request.isLinkActivation {
                 return .allow
             }
+            return .block
         }
 
-        // Everything else — file:, javascript:, data:, mailto:, custom
-        // schemes, or a link to the shell with no fragment — is blocked.
-        // Issue #18 will extend this for sibling .md file: links; that is
-        // deliberately not handled yet.
+        // An absolute file: URL the author wrote into the Markdown source.
+        // `DocumentRelativeLinks` leaves any reference with a scheme alone,
+        // so nothing rewrote this one and it carries no containment check.
+        // Opening it would hand NSWorkspace an arbitrary path from untrusted
+        // input: `<a href="file:///Users/me/Downloads/setup.command">` would
+        // launch that file. Blocked. Relative references, which issue #18's
+        // user stories are about, go through the folium-doc: case below.
+        if url.scheme == "file" {
+            return .block
+        }
+
+        // What `DocumentRelativeLinks` rewrote `[roadmap](./roadmap.md)` to
+        // (issue #18). An <img> request is answered inside the web view, but
+        // a clicked link has to leave it, so the real path has to be
+        // recovered — through the same containment check the scheme handler
+        // uses.
+        //
+        // Containment alone is not enough here. Reading a file under the
+        // document's directory is one thing; *opening* one is launching it,
+        // and a repo can hold `install.command` next to its README as
+        // easily as another `.md`. Hence the extra type check.
+        //
+        // Anything that fails — no `documentDirectory`, a request the
+        // resolver refuses, a resolved file of the wrong type — blocks.
+        if url.scheme == DocumentResourceResolver.scheme {
+            guard let documentDirectory,
+                  let resolved = DocumentResourceResolver.fileURL(for: url, documentDirectory: documentDirectory),
+                  isOpenableDocument(resolved)
+            else {
+                return .block
+            }
+            return .openDocument(resolved)
+        }
+
+        // Everything else — javascript:, data:, mailto:, custom schemes —
+        // is blocked.
         return .block
+    }
+
+    /// The file-extension allowlist for what `.openDocument` will hand to
+    /// `NSWorkspace`. Matches the `public.filename-extension`s
+    /// `packaging/Info.plist` declares for `net.daringfireball.markdown`,
+    /// the only document type this app opens. Issue #18 asks for links to
+    /// sibling Markdown files to work, not for license to launch whatever
+    /// else sits in the same directory.
+    private static let openableDocumentExtensions: Set<String> = ["md", "markdown"]
+
+    private static func isOpenableDocument(_ url: URL) -> Bool {
+        openableDocumentExtensions.contains(url.pathExtension.lowercased())
     }
 }
 

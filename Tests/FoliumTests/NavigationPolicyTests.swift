@@ -11,7 +11,22 @@ struct NavigationPolicyTests {
         let name: String
         let url: URL?
         let isLinkActivation: Bool
+        let documentDirectory: URL?
         let expected: NavigationDecision
+
+        init(
+            name: String,
+            url: URL?,
+            isLinkActivation: Bool,
+            documentDirectory: URL? = nil,
+            expected: NavigationDecision
+        ) {
+            self.name = name
+            self.url = url
+            self.isLinkActivation = isLinkActivation
+            self.documentDirectory = documentDirectory
+            self.expected = expected
+        }
     }
 
     private var cases: [Case] {
@@ -53,8 +68,21 @@ struct NavigationPolicyTests {
                 expected: .block
             ),
             Case(
-                name: "file: to a different file is blocked",
+                // An absolute file: URL an author wrote directly into the
+                // Markdown source is never rewritten by DocumentRelativeLinks
+                // (it already has a scheme), so it reaches decide() exactly
+                // as authored — with no containment check possible, since it
+                // could name anything on the filesystem. Handing that to
+                // NSWorkspace would launch whatever it points at from a
+                // single click on untrusted content, so this is blocked, not
+                // opened. See the comment on this case in NavigationPolicy.
+                name: "an absolute file: link is blocked, not opened",
                 url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: true,
+                expected: .block
+            ),
+            Case(
+                name: "an absolute file: link is blocked even when it wasn't a click",
+                url: URL(string: "file:///Users/me/notes.md"), isLinkActivation: false,
                 expected: .block
             ),
             Case(
@@ -103,7 +131,8 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL, isLinkActivation: false),
-            shellURL: relativeShell
+            shellURL: relativeShell,
+            documentDirectory: nil
         )
 
         #expect(decision == .allow)
@@ -118,7 +147,8 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL.appendingFragment("usage"), isLinkActivation: true),
-            shellURL: relativeShell
+            shellURL: relativeShell,
+            documentDirectory: nil
         )
 
         #expect(decision == .scrollToAnchor("usage"))
@@ -128,10 +158,101 @@ struct NavigationPolicyTests {
         for testCase in cases {
             let decision = NavigationPolicy.decide(
                 NavigationRequest(url: testCase.url, isLinkActivation: testCase.isLinkActivation),
-                shellURL: shellURL
+                shellURL: shellURL,
+                documentDirectory: testCase.documentDirectory
             )
             #expect(decision == testCase.expected, "\(testCase.name)")
         }
+    }
+
+    // MARK: - folium-doc: links (issue #18)
+    //
+    // These need a real file on disk — DocumentResourceResolver.fileURL,
+    // which decide() calls to map a clicked link back to a real path,
+    // refuses to resolve anything that doesn't exist as a regular file — so
+    // they're kept out of the table above and given their own fixture.
+
+    @Test func documentSchemeLinkToAFileInsideTheDirectoryOpensAsASiblingDocument() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.md")
+        try Data().write(to: notes)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    @Test func documentSchemeLinkToAFileWithTheLongMarkdownExtensionOpens() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.markdown")
+        try Data().write(to: notes)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.markdown"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    /// The containment check alone isn't enough: `install.command` sitting
+    /// right next to a README is exactly as reachable, by the same
+    /// containment rules, as `screenshot.png` is. `.openDocument` hands its
+    /// URL to `NSWorkspace`, which launches it — so this is refused even
+    /// though the file is real, regular, and fully inside the document's
+    /// own directory.
+    @Test func documentSchemeLinkToANonMarkdownFileIsBlockedEvenThoughItsContained() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("install.command")
+        try Data().write(to: executable)
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/install.command"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .block)
+    }
+
+    @Test func documentSchemeLinkThatEscapesTheDirectoryIsBlockedNotOpened() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/../../etc/passwd"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: directory
+        )
+
+        #expect(decision == .block)
+    }
+
+    @Test func documentSchemeLinkWithNoDocumentDirectoryIsBlocked() {
+        // A document with nothing on disk (a brand-new untitled window) has
+        // no directory of its own to resolve a folium-doc: link against.
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
+            shellURL: shellURL,
+            documentDirectory: nil
+        )
+
+        #expect(decision == .block)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NavigationPolicyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 }
 

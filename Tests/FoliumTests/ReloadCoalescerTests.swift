@@ -91,6 +91,23 @@ struct ReloadCoalescerTests {
         #expect(reloads.total == 2)
     }
 
+    @Test func aWindowThatOutlivesTheCoalescerDoesNothing() {
+        // A coalescing window that elapses after the coalescer itself is
+        // gone: the user closed the document's window mid-burst, so
+        // `LiveDocument` — and the coalescer it owns — deallocated with a
+        // scheduled reload still pending. `noteChange`'s `[weak self]` is
+        // what keeps that closure from reloading through a dead instance.
+        let scheduler = ManualScheduler()
+        let reloads = Counter()
+        var coalescer: ReloadCoalescer? = ReloadCoalescer(scheduler: scheduler, reload: reloads.increment)
+
+        coalescer?.noteChange()
+        coalescer = nil
+        scheduler.elapse()
+
+        #expect(reloads.total == 0)
+    }
+
     @Test func theRealSchedulerDefersTheWorkAndThenRunsIt() async {
         // The one thing the manual scheduler can't show: the real one waits,
         // and then actually fires.

@@ -64,6 +64,13 @@ private struct DocumentView: View {
     }
 
     var body: some View {
-        MarkdownWebView(bodyHTML: document.bodyHTML, scrollKeys: scrollKeys.bindings)
+        MarkdownWebView(
+            bodyHTML: document.bodyHTML,
+            scrollKeys: scrollKeys.bindings,
+            // Taken from the document rather than derived again here, so the
+            // directory the body's references were rewritten against is the
+            // one the scheme handler resolves them back against (issue #18).
+            documentDirectory: document.documentDirectory
+        )
     }
 }
