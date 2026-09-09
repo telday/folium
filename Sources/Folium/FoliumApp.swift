@@ -10,6 +10,18 @@ struct FoliumApp: App {
     // to reach every document window, which is a separate scene.
     @StateObject private var scrollKeys = ScrollKeyStore()
 
+    // `App.init()` runs exactly once, unconditionally, as part of SwiftUI's
+    // own launch sequence — unlike a top-level `let`, which only runs if
+    // something later touches it. `BenchBudget.budgets` has nothing to wait
+    // on, so this is where `scripts/bench.sh` reads the budgets instead of
+    // keeping its own copy of them.
+    init() {
+        let marker = BenchMarker()
+        for line in BenchBudget.budgetTableLines() {
+            marker.writeLine(line)
+        }
+    }
+
     var body: some Scene {
         DocumentGroup(viewing: MarkdownDocument.self) { configuration in
             DocumentView(

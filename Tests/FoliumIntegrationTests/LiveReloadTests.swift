@@ -89,6 +89,36 @@ struct LiveReloadTests {
         #expect(marker == "alive")
     }
 
+    @Test func callAsyncJavaScriptActuallyWaitsRatherThanReturningImmediately() async throws {
+        // The `first-paint` marker's whole timing story rests on one WebKit
+        // fact: `evaluateJavaScript` does not wait for a returned `Promise`
+        // to settle. Confirmed directly against a real `WKWebView` while
+        // building this — a script whose completion value is a pending
+        // `Promise` fails immediately with "unsupported type" rather than
+        // waiting for it. `callAsyncJavaScript` is the API that actually
+        // waits: it runs the string as an `async` function body and only
+        // calls back once that function's own `await`s finish, which is what
+        // `MarkdownWebView` uses for `MarkdownPage.paintConfirmationScript`.
+        //
+        // Verified here with a timer rather than that script itself:
+        // `requestAnimationFrame` never fires for a `WKWebView` under
+        // `swift test` — also confirmed directly, by watching it hang
+        // indefinitely — because this process has no compositor connection
+        // for the view to paint through. The double-rAF path itself can only
+        // be exercised by `make bench` against the real, windowed app.
+        let webView = try await loadedWebView(showing: "<h1>Paint me</h1>")
+
+        let start = ContinuousClock.now
+        let result = try await webView.callAsyncJavaScript(
+            "await new Promise(resolve => setTimeout(resolve, 50)); return true;",
+            contentWorld: .page
+        )
+        let elapsed = start.duration(to: .now)
+
+        #expect(result as? Bool == true)
+        #expect(elapsed >= .milliseconds(50))
+    }
+
     @Test func aFileThatCannotBeWatchedStillOpensAndRenders() async throws {
         // A path Folium can't watch must not cost the user the document.
         let missing = URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).md")

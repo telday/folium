@@ -48,3 +48,31 @@ jobs:
       # bundle and assert its finished shape. See scripts/verify-bundle.sh.
       - name: make bundle && make verify-bundle
         run: make bundle && make verify-bundle
+
+      # Informational only, never a gate: wall-clock numbers from a shared
+      # runner measure the runner, and a gate that fails randomly trains
+      # everyone to ignore it (issue #21, CONTEXT.md's perceived-latency
+      # priority). `make bench` exits 0 whether or not a budget is met, so
+      # continue-on-error covers only the recipe failing outright.
+      #
+      # The runner does have a display session, so all five moments do get
+      # measured here — but the numbers are a shared runner's, not a Mac's:
+      # the first CI run measured cold launch at 4550 ms against 1427 ms on
+      # real hardware. Read the trend across runs, not the absolute values,
+      # and take a number seriously only after reproducing it locally.
+      #
+      # A machine *without* a display session — a locked screen, a headless
+      # session — reports "not measured" for everything paint-dependent
+      # instead, because requestAnimationFrame never runs for a window that
+      # is not on screen. That degrades to a report with holes in it, never
+      # to a failure.
+      - name: make bench
+        continue-on-error: true
+        run: make bench 2>&1 | tee bench-results.txt
+
+      - name: Upload bench results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: bench-results.txt
+          if-no-files-found: warn

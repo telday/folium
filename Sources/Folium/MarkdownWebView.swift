@@ -32,7 +32,7 @@ struct MarkdownWebView: NSViewRepresentable {
         // open, not just the next one.
         webView.scrollKeys = scrollKeys
         if let ready = context.coordinator.state.render(bodyHTML: bodyHTML) {
-            webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: ready))
+            context.coordinator.inject(ready, into: webView)
         }
     }
 
@@ -54,7 +54,52 @@ struct MarkdownWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard let queued = state.shellDidFinishLoading() else { return }
-            webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: queued))
+            inject(queued, into: webView)
+        }
+
+        /// Injects rendered body HTML. Outside a bench run this is a single
+        /// `evaluateJavaScript` call with no completion handler, same as
+        /// before this file measured anything. Under FOLIUM_BENCH,
+        /// `MarkdownWebViewState.paintEventToConfirm` names an event to
+        /// confirm and mark, and confirming means chaining
+        /// `MarkdownPage.paintConfirmationScript` through
+        /// `callAsyncJavaScript` — `evaluateJavaScript` does not wait for a
+        /// returned `Promise`, confirmed against a real `WKWebView`;
+        /// `callAsyncJavaScript` runs the string as an `async` function body
+        /// and does wait, on its `await`s.
+        func inject(_ bodyHTML: String, into webView: WKWebView) {
+            let script = MarkdownPage.renderBodyScript(bodyHTML: bodyHTML)
+            guard state.shouldConfirmPaint() else {
+                webView.evaluateJavaScript(script)
+                return
+            }
+            webView.evaluateJavaScript(script) { [state] _, _ in
+                Task { @MainActor in
+                    _ = try? await webView.callAsyncJavaScript(
+                        MarkdownPage.paintConfirmationScript,
+                        contentWorld: .page
+                    )
+                    // The body's size identifies *what* was drawn. A live
+                    // reload changes the document, so its repaint carries a
+                    // different size than the paint before it; a view that
+                    // is merely settling redraws the same body at the same
+                    // size, and the script can tell them apart.
+                    state.benchMarker.mark("paint", detail: String(bodyHTML.count))
+
+                    // The scroll probe runs after the paint it follows, not
+                    // instead of it: it scrolls the real document for ~180
+                    // frames, so starting it any earlier would be measuring
+                    // a document still being drawn.
+                    guard MarkdownWebViewState.shouldRunScrollProbe() else { return }
+                    let result = try? await webView.callAsyncJavaScript(
+                        MarkdownPage.scrollProbeScript,
+                        contentWorld: .page
+                    )
+                    guard let values = result as? [String: Any],
+                          let line = BenchBudget.scrollReportLine(from: values) else { return }
+                    state.benchMarker.writeLine("FOLIUM_BENCH_REPORT scrolling \(line)")
+                }
+            }
         }
 
         func webView(

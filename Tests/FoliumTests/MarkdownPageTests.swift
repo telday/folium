@@ -131,6 +131,22 @@ struct MarkdownPageTests {
         #expect(script.contains(#"<button type=\"button\" class=\"copy-button\">Copy<\/button>"#))
     }
 
+    // MARK: - paintConfirmationScript
+
+    @Test func paintConfirmationScriptWaitsForTwoAnimationFrames() {
+        // The double requestAnimationFrame is the entire mechanism this
+        // relies on — see the doc comment on why one frame isn't enough. It
+        // has to run via `callAsyncJavaScript`, not `evaluateJavaScript`,
+        // which is why this is a function body (`await` + `return`) rather
+        // than a bare expression — `LiveReloadTests` (integration) proves
+        // `callAsyncJavaScript` actually waits on an `await` before its
+        // callback fires.
+        let script = MarkdownPage.paintConfirmationScript
+        #expect(script.contains("await"))
+        #expect(script.contains("Promise"))
+        #expect(script.components(separatedBy: "requestAnimationFrame").count - 1 == 2)
+    }
+
     // MARK: - scrollScript
 
     @Test func scrollsTheDocumentTheWayTheKeyPointed() {
@@ -175,5 +191,27 @@ struct MarkdownPageTests {
 
         #expect(script.contains(#"a\"b\\c"#))
         #expect(!script.contains(#""a"b\c""#))
+    }
+
+    /// The probe has to report all three fields `BenchBudget
+    /// .scrollReportLine(from:)` reads, and infer the frame interval from
+    /// the run rather than assuming 60 Hz — otherwise a 120 Hz display would
+    /// pass while dropping every other frame.
+    @Test func scrollProbeScriptReportsFramesDroppedAgainstAnObservedInterval() {
+        let script = MarkdownPage.scrollProbeScript
+
+        #expect(script.contains("requestAnimationFrame"))
+        #expect(script.contains("measured:"))
+        #expect(script.contains("dropped:"))
+        #expect(script.contains("hz:"))
+        // The interval comes from the sorted samples, not a literal 16.67.
+        #expect(script.contains("sorted[Math.floor(sorted.length * 0.1)]"))
+        #expect(!script.contains("16.67"))
+    }
+
+    /// A document scrolled past its end stops painting new content, so idle
+    /// frames would dilute the count.
+    @Test func scrollProbeScriptWrapsBackToTheTopAtTheEndOfTheDocument() {
+        #expect(MarkdownPage.scrollProbeScript.contains("window.scrollTo(0, 0)"))
     }
 }

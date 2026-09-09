@@ -26,4 +26,26 @@ struct DocumentRestorationTests {
         // so restoration is off before this ever reaches a window.
         #expect(FoliumAppDelegate().applicationSupportsSecureRestorableState(NSApplication.shared))
     }
+
+    /// `scripts/bench.sh` sets FOLIUM_BENCH_OPEN so cold launch can be timed
+    /// against a real window (see the doc comment on
+    /// `applicationDidFinishLaunching`); every real user launches with it
+    /// unset, and this is the half of that behavior a test process can
+    /// verify safely. The positive case — that setting it actually opens the
+    /// document — needs `NSDocumentController` to resolve `MarkdownDocument`
+    /// for the Markdown UTI, which only happens once `DocumentGroup` has
+    /// registered it as part of a live `FoliumApp` scene; `swift test` never
+    /// constructs one, the same reason `MarkdownDocument.swift` itself is
+    /// off the coverage list. `make bench`, run against the real app, is
+    /// where that half is actually exercised end to end.
+    @Test func benchOpenHookDoesNothingWhenTheEnvVarIsUnset() {
+        unsetenv("FOLIUM_BENCH_OPEN")
+        let before = NSDocumentController.shared.documents.count
+
+        FoliumAppDelegate().applicationDidFinishLaunching(
+            Notification(name: NSApplication.didFinishLaunchingNotification)
+        )
+
+        #expect(NSDocumentController.shared.documents.count == before)
+    }
 }

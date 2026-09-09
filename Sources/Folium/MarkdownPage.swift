@@ -70,6 +70,69 @@ enum MarkdownPage {
         return "window.FoliumRenderBody(\(jsStringLiteral(decorated)))"
     }
 
+    /// An async function body (for `callAsyncJavaScript`, not
+    /// `evaluateJavaScript` — see `MarkdownWebView.inject`) confirming a
+    /// frame has actually been drawn. The browser only runs a
+    /// `requestAnimationFrame` callback right before it paints, so the first
+    /// one lands before this injection's paint and the second lands after
+    /// it — the standard way to learn a frame really landed, not just that
+    /// the script that scheduled it finished running.
+    static let paintConfirmationScript = """
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return true;
+        """
+
+    /// An async function body (for `callAsyncJavaScript`) that scrolls the
+    /// document for a fixed number of animation frames and reports how many
+    /// of them were late. Returns `{ measured, dropped, hz }`.
+    ///
+    /// The display's frame interval is inferred from the fastest frames
+    /// actually observed rather than assumed to be 16.7 ms: `CONTEXT.md`
+    /// budgets scrolling at "no dropped frames, including 120 Hz ProMotion",
+    /// and on a ProMotion display a frame that would be comfortably on time
+    /// at 60 Hz is two frames late. Taking the 10th percentile rather than
+    /// the minimum keeps one anomalously short interval from setting the
+    /// bar for the whole run.
+    ///
+    /// This scrolls by script rather than by synthesising trackpad events,
+    /// so it measures what it costs to *draw* the document while it moves,
+    /// not the full input pipeline — which is where a 500 KB document with
+    /// hundreds of highlighted code blocks would actually stall.
+    static let scrollProbeScript = """
+        const FRAMES = 180;
+        const samples = [];
+        let last = performance.now();
+        const step = Math.max(1, Math.floor(document.body.scrollHeight / 240));
+        await new Promise(resolve => {
+            let n = 0;
+            function frame(now) {
+                samples.push(now - last);
+                last = now;
+                // Wrap at the bottom: a document scrolled past its end stops
+                // painting new content, and idle frames are not what this is
+                // trying to measure.
+                if (window.scrollY + window.innerHeight >= document.body.scrollHeight - 2) {
+                    window.scrollTo(0, 0);
+                } else {
+                    window.scrollBy(0, step);
+                }
+                if (++n >= FRAMES) { resolve(); return; }
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        });
+        // The first sample spans from before the loop began, not between two
+        // frames of it.
+        samples.shift();
+        const sorted = [...samples].sort((a, b) => a - b);
+        const interval = sorted[Math.floor(sorted.length * 0.1)];
+        return {
+            measured: samples.length,
+            dropped: samples.filter(d => d > interval * 1.5).length,
+            hz: Math.round(1000 / interval)
+        };
+        """
+
     /// How far one press of a scroll key moves the document, in lines of body
     /// text. `Resources/scroll.js` turns lines into pixels against the
     /// document's own line height, so the step keeps its meaning as the user

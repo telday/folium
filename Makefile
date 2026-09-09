@@ -47,7 +47,7 @@ INSTALL_DIR := /Applications
 INSTALLED   := $(INSTALL_DIR)/$(APP_NAME).app
 
 .PHONY: all build bundle verify-bundle install uninstall clean vendor \
-        check lint vet test test-unit test-integration coverage
+        check lint vet test test-unit test-integration coverage bench
 
 all: bundle
 
@@ -132,6 +132,24 @@ bundle: build
 ## Builds nothing — run `make bundle` first. See scripts/verify-bundle.sh.
 verify-bundle:
 	./scripts/verify-bundle.sh "$(APP_BUNDLE)" "$(VERSION)"
+
+## Measure and report latency budgets: cold launch, live-reload, Markdown
+## render. Regenerates the fixture on every run — scripts/bench.sh mutates it
+## in place for the live-reload probe, so a stale one would start already
+## probed. Exits 0 regardless; CI records this as a trend, not a gate. See
+## issue #21.
+##
+## Measures $(APP_BUNDLE), the same artifact `make install` puts in
+## /Applications, rather than the bare binary `swift build` leaves in
+## .build. Not a preference for realism: an unbundled executable has no
+## Info.plist, never becomes a regular activatable app, and so never puts a
+## window on screen for WebKit to paint into — 0 of 6 such runs produced a
+## first-paint marker, against 3 of 4 for the bundle. scripts/bench.sh runs
+## the executable inside the bundle directly, rather than going through
+## `open`, because it has to read that process's own stderr.
+bench: bundle
+	./scripts/make-bench-fixture.sh
+	./scripts/bench.sh .build/bench/fixture.md "$(APP_BUNDLE)"
 
 ## Install the bundle to /Applications.
 install: bundle
