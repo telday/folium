@@ -131,7 +131,8 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL, isLinkActivation: false),
-            shellURL: relativeShell
+            shellURL: relativeShell,
+            documentDirectory: nil
         )
 
         #expect(decision == .allow)
@@ -146,7 +147,8 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL.appendingFragment("usage"), isLinkActivation: true),
-            shellURL: relativeShell
+            shellURL: relativeShell,
+            documentDirectory: nil
         )
 
         #expect(decision == .scrollToAnchor("usage"))

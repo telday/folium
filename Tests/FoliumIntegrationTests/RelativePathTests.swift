@@ -103,6 +103,78 @@ struct RelativePathTests {
         #expect(recorded["directive"] as? String == "img-src")
     }
 
+    // MARK: - Sibling document links (issue #18, user story 2)
+
+    /// The other half of issue #18: a link to a sibling Markdown file has to
+    /// work, not just an image. That path ends in
+    /// `MarkdownWebView.Coordinator.decidePolicyFor`, which is
+    /// coverage-excluded glue — so per `CONTEXT.md`'s third floor its
+    /// behaviour is owed an integration test rather than a unit one.
+    ///
+    /// Driven through the whole real pipeline: Markdown on disk →
+    /// `LiveDocument` (which applies `DocumentRelativeLinks`) → the shell →
+    /// a real click → the real `Coordinator`. Only `NSWorkspace` is stood in
+    /// for, so the test records what would have opened instead of launching
+    /// another copy of the app mid-suite.
+    @Test func clickingASiblingMarkdownLinkOpensItInsteadOfNavigating() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sibling = directory.appendingPathComponent("notes.md")
+        try "# Notes".write(to: sibling, atomically: true, encoding: .utf8)
+        let readme = directory.appendingPathComponent("README.md")
+        try "[the notes](./notes.md)".write(to: readme, atomically: true, encoding: .utf8)
+
+        let recorder = OpenedURLRecorder()
+        let (webView, waiter) = try await loadedShellWithCoordinator(
+            documentDirectory: directory,
+            openDocument: { recorder.record($0) }
+        )
+        defer { webView.window?.close() }
+        _ = waiter // kept alive: `navigationDelegate` is a weak reference
+
+        let document = LiveDocument(text: try String(contentsOf: readme, encoding: .utf8), fileURL: readme)
+        _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: document.bodyHTML))
+        _ = try await webView.evaluateJavaScript("document.querySelector('#markdown-content a').click();")
+
+        #expect(await waitUntil { recorder.openedURLs.count == 1 })
+        #expect(recorder.openedURLs == [sibling.standardizedFileURL.resolvingSymlinksInPath()])
+        // Cancelled, so the document the user was reading is still on screen.
+        #expect(webView.url?.path == MarkdownPage.pageURL.path)
+    }
+
+    /// The allowlist, end to end: `install.command` next to a README is as
+    /// reachable by containment as `notes.md` is, and `.openDocument` hands
+    /// its URL to `NSWorkspace`, which would *launch* it. A click on one
+    /// must do nothing at all — neither open nor navigate.
+    @Test func clickingASiblingLinkToANonMarkdownFileDoesNothing() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "echo pwned".write(
+            to: directory.appendingPathComponent("install.command"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let readme = directory.appendingPathComponent("README.md")
+        try "[run the installer](./install.command)".write(to: readme, atomically: true, encoding: .utf8)
+
+        let recorder = OpenedURLRecorder()
+        let (webView, waiter) = try await loadedShellWithCoordinator(
+            documentDirectory: directory,
+            openDocument: { recorder.record($0) }
+        )
+        defer { webView.window?.close() }
+        _ = waiter // kept alive: `navigationDelegate` is a weak reference
+
+        let document = LiveDocument(text: try String(contentsOf: readme, encoding: .utf8), fileURL: readme)
+        _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: document.bodyHTML))
+        _ = try await webView.evaluateJavaScript("document.querySelector('#markdown-content a').click();")
+
+        // Nothing to wait *for*, so the assertion has to be that nothing
+        // happened within a window long enough for it to have happened.
+        #expect(await waitUntil(within: .milliseconds(500)) { !recorder.openedURLs.isEmpty } == false)
+        #expect(webView.url?.path == MarkdownPage.pageURL.path)
+    }
+
     // MARK: - Helpers
 
     /// A 1x1 transparent PNG — the smallest file that is unambiguously a
@@ -131,6 +203,48 @@ struct RelativePathTests {
         webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
         await waiter.waitUntilFinished()
         return webView
+    }
+
+    /// The same shell, but with a real `MarkdownWebView.Coordinator` as the
+    /// navigation delegate and attached to a real key `NSWindow` — what the
+    /// two clicking tests above need and the resource tests don't.
+    /// `ContentSecurityPolicyTests` found the window necessary for a click to
+    /// reach `decidePolicyFor` the way it does in the running app.
+    private func loadedShellWithCoordinator(
+        documentDirectory: URL,
+        openDocument: @escaping (URL) -> Void
+    ) async throws -> (webView: WKWebView, waiter: CoordinatorWaiter) {
+        let configuration = WKWebViewConfiguration()
+        configuration.setURLSchemeHandler(
+            DocumentResourceSchemeHandler(documentDirectory: documentDirectory),
+            forURLScheme: DocumentResourceResolver.scheme
+        )
+        let webView = WKWebView(
+            frame: NSRect(x: 0, y: 0, width: 1012, height: 800),
+            configuration: configuration
+        )
+        let coordinator = MarkdownWebView.Coordinator(
+            documentDirectory: documentDirectory,
+            openDocument: openDocument
+        )
+        let waiter = CoordinatorWaiter(coordinator: coordinator)
+        webView.navigationDelegate = waiter
+        webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
+        await waiter.waitUntilFinished()
+
+        let window = NSWindow(
+            contentRect: webView.frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        // A programmatically created NSWindow releases itself on close, which
+        // double-frees once ARC also lets go — a segfault that takes the whole
+        // bundle down instead of failing a test (same fix as ScrollKeyTests).
+        window.isReleasedWhenClosed = false
+        window.contentView = webView
+        window.makeKeyAndOrderFront(nil)
+        return (webView, waiter)
     }
 
     private func naturalWidth(of selector: String, in webView: WKWebView) async throws -> Double {
@@ -234,5 +348,50 @@ private final class NavigationWaiter: NSObject, WKNavigationDelegate {
         finished = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+/// Records what would have been handed to `NSWorkspace.shared.open(_:)` —
+/// see `MarkdownWebView.Coordinator.openDocument` for why the production
+/// default is injected rather than called for real in a test.
+@MainActor
+private final class OpenedURLRecorder {
+    private(set) var openedURLs: [URL] = []
+    func record(_ url: URL) { openedURLs.append(url) }
+}
+
+/// Forwards to a real `MarkdownWebView.Coordinator` — the production
+/// navigation delegate under test — while also resolving a continuation on
+/// `didFinish`, since `Coordinator` exposes no way to wait for the shell to
+/// finish loading. Mirrors `ContentSecurityPolicyTests`'s waiter of the same
+/// name; kept per-suite because each is `private` to its own file.
+@MainActor
+private final class CoordinatorWaiter: NSObject, WKNavigationDelegate {
+    private let coordinator: MarkdownWebView.Coordinator
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finished = false
+
+    init(coordinator: MarkdownWebView.Coordinator) {
+        self.coordinator = coordinator
+    }
+
+    func waitUntilFinished() async {
+        if finished { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        coordinator.webView(webView, didFinish: navigation)
+        finished = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
+        coordinator.webView(webView, decidePolicyFor: navigationAction, decisionHandler: decisionHandler)
     }
 }

@@ -21,15 +21,6 @@ import WebKit
 final class DocumentResourceSchemeHandler: NSObject, WKURLSchemeHandler {
     private let documentDirectory: URL
 
-    /// Tasks WebKit has already told us to stop. Responding to a
-    /// `WKURLSchemeTask` after `stop(_:)` raises an Objective-C exception
-    /// rather than failing gracefully — WebKit can call `stop` if the page
-    /// navigates away while a read is still in flight — so every response
-    /// path below checks this first. `WKURLSchemeTask` is a reference type
-    /// even though it's expressed as a protocol, which is what makes
-    /// `ObjectIdentifier` a valid way to key this set.
-    private var stoppedTasks = Set<ObjectIdentifier>()
-
     init(documentDirectory: URL) {
         self.documentDirectory = documentDirectory
     }
@@ -39,7 +30,11 @@ final class DocumentResourceSchemeHandler: NSObject, WKURLSchemeHandler {
               let fileURL = DocumentResourceResolver.fileURL(for: requestURL, documentDirectory: documentDirectory),
               let data = try? Data(contentsOf: fileURL)
         else {
-            complete(urlSchemeTask) { $0.didFailWithError(CocoaError(.fileReadNoSuchFile)) }
+            // A refused or unreadable resource fails the request rather than
+            // returning empty bytes: a failure is a visibly broken image or
+            // dead link, which `CONTEXT.md`'s first floor asks for, where a
+            // zero-length 200 would render as nothing at all.
+            urlSchemeTask.didFailWithError(CocoaError(.fileReadNoSuchFile))
             return
         }
 
@@ -58,27 +53,25 @@ final class DocumentResourceSchemeHandler: NSObject, WKURLSchemeHandler {
             ]
         )
         guard let response else {
-            complete(urlSchemeTask) { $0.didFailWithError(CocoaError(.fileReadUnknown)) }
+            urlSchemeTask.didFailWithError(CocoaError(.fileReadUnknown))
             return
         }
 
-        complete(urlSchemeTask) { task in
-            task.didReceive(response)
-            task.didReceive(data)
-            task.didFinish()
-        }
+        urlSchemeTask.didReceive(response)
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        stoppedTasks.insert(ObjectIdentifier(urlSchemeTask))
-    }
-
-    /// Runs `body` unless `task` was already stopped, checked right before
-    /// acting rather than once at the top of `webView(_:start:)` — the
-    /// resolver call and the file read both take real time, during which a
-    /// fast navigation away can still land a `stop(_:)` call.
-    private func complete(_ task: WKURLSchemeTask, _ body: (WKURLSchemeTask) -> Void) {
-        guard !stoppedTasks.contains(ObjectIdentifier(task)) else { return }
-        body(task)
-    }
+    /// Nothing to cancel. Responding to a `WKURLSchemeTask` after WebKit has
+    /// stopped it raises an Objective-C exception rather than failing
+    /// gracefully, so a handler that finishes its work *later* — off the main
+    /// thread, or after an `await` — must track which tasks were stopped and
+    /// check before every callback. `webView(_:start:)` above instead
+    /// resolves, reads, and responds without ever yielding, so by the time
+    /// WebKit can deliver this call the task is already finished and this
+    /// handler holds no reference to it.
+    ///
+    /// Making that read asynchronous would reintroduce the window and this
+    /// method's obligation along with it.
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 }
