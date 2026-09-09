@@ -24,18 +24,32 @@ struct MarkdownWebView: NSViewRepresentable {
         Coordinator(documentDirectory: documentDirectory)
     }
 
-    func makeNSView(context: Context) -> ScrollKeyWebView {
+    /// Assembles the configuration a document's web view is created with.
+    ///
+    /// Separate from `makeNSView` so a test can call it. `makeNSView` takes a
+    /// SwiftUI `Context`, which no test can construct, and the
+    /// `folium-doc:` handler registered here is the whole of issue #18's
+    /// resource path — registered anywhere else, the integration suite would
+    /// be proving its own wiring works rather than the app's.
+    static func configuration(documentDirectory: URL?) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        if let documentDirectory {
-            // Must be set before the web view exists —
-            // `setURLSchemeHandler(_:forURLScheme:)` cannot be called on a
-            // configuration already handed to a live WKWebView. A document
-            // with nothing on disk gets no handler at all: a folium-doc:
-            // request with nowhere to resolve against would only ever fail.
-            let schemeHandler = DocumentResourceSchemeHandler(documentDirectory: documentDirectory)
-            configuration.setURLSchemeHandler(schemeHandler, forURLScheme: DocumentResourceResolver.scheme)
+        guard let documentDirectory else {
+            // A document with nothing on disk gets no handler: a folium-doc:
+            // request has nowhere to resolve against, so it could only fail.
+            return configuration
         }
-        let webView = ScrollKeyWebView(configuration: configuration)
+        // Must be set before the web view exists —
+        // `setURLSchemeHandler(_:forURLScheme:)` cannot be called on a
+        // configuration a live WKWebView already holds.
+        configuration.setURLSchemeHandler(
+            DocumentResourceSchemeHandler(documentDirectory: documentDirectory),
+            forURLScheme: DocumentResourceResolver.scheme
+        )
+        return configuration
+    }
+
+    func makeNSView(context: Context) -> ScrollKeyWebView {
+        let webView = ScrollKeyWebView(configuration: Self.configuration(documentDirectory: documentDirectory))
         webView.scrollKeys = scrollKeys
         webView.navigationDelegate = context.coordinator
         webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)

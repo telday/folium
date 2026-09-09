@@ -235,4 +235,26 @@ struct DocumentResourceResolverTests {
 
         #expect(resolved == nil)
     }
+
+    /// Containment is a path-prefix check, so a *sibling* directory whose
+    /// name merely starts with the document directory's name is the case a
+    /// prefix check gets wrong if it forgets the separator: `/tmp/docs` is
+    /// not a prefix-free boundary for `/tmp/docs-private`. A document in
+    /// `docs/` must not read out of `docs-private/`.
+    @Test func aSiblingDirectoryWhoseNameExtendsTheDocumentDirectorysIsRefused() throws {
+        let parent = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("docs", isDirectory: true)
+        let sibling = parent.appendingPathComponent("docs-private", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+        try Data("secret".utf8).write(to: sibling.appendingPathComponent("secret.png"))
+
+        let resolved = DocumentResourceResolver.fileURL(
+            for: URL(string: "folium-doc://doc/../docs-private/secret.png")!,
+            documentDirectory: directory
+        )
+
+        #expect(resolved == nil)
+    }
 }

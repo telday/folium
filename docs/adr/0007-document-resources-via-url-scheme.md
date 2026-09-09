@@ -100,6 +100,25 @@ instead.
   `file:` used for the shell's own bundled assets. `script-src`/`style-src`
   deliberately do not: nothing a rendered document references through this
   scheme is ever treated as code.
+- **Reading a contained file and *opening* one are separately gated.** The
+  containment check governs what a document may load as a resource. It is not
+  sufficient for a clicked link, because `.openDocument` hands its URL to
+  `NSWorkspace`, which launches the file with whatever application claims it —
+  and a repo can hold `install.command` beside its README as easily as another
+  `.md`. `NavigationPolicy.openableDocumentExtensions` therefore restricts
+  what a link may open to the `public.filename-extension`s
+  `packaging/Info.plist` declares for `net.daringfireball.markdown` (`md`,
+  `markdown`), the only document type this app opens. Issue #18's second user
+  story asks for links to sibling *Markdown* files, so nothing is lost. An
+  absolute `file:` URL written into the source is blocked outright for the
+  same reason, with the added one that nothing rewrote it and so it carries
+  no containment check at all.
+- **A clicked sibling link opens at the top of the document, not at its
+  anchor.** `DocumentRelativeLinks` carries a fragment through into the
+  rewritten URL, but `DocumentResourceResolver` resolves a path and
+  `.openDocument` passes that path on, so `sibling.md#section` loses the
+  `#section`. Scrolling a newly-opened document to an anchor means carrying
+  the fragment through `DocumentGroup`'s open, which is separate work.
 - **Rendering a document now costs a second regex pass over the body HTML.**
   Measured in release against `scripts/make-bench-fixture.sh`'s 514 KB
   fixture: `MarkdownRenderer.renderHTML` 4.3 ms, `DocumentRelativeLinks

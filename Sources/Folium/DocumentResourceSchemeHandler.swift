@@ -2,22 +2,18 @@ import Foundation
 import UniformTypeIdentifiers
 import WebKit
 
-/// A `WKURLSchemeHandler` for the private `folium-doc:` scheme (issue #18):
-/// reads a document-relative resource's bytes on the app's own process,
+/// A `WKURLSchemeHandler` for the private `folium-doc:` scheme (issue #18).
+/// Reads a document-relative resource's bytes on the app's own process,
 /// which is unsandboxed (ADR 0003), and hands them to the web content
-/// process. The web content process itself gets no filesystem grant at all —
-/// see `docs/adr/0007-document-resources-via-url-scheme.md` for why that
-/// replaced widening `loadFileURL`'s read-access grant.
+/// process. That process receives no filesystem grant of its own. See
+/// [ADR 0007](../../docs/adr/0007-document-resources-via-url-scheme.md).
 ///
-/// One instance per open document: `MarkdownWebView` constructs it with that
-/// document's own directory and registers it on the `WKWebViewConfiguration`
-/// before creating the web view, because
-/// `setURLSchemeHandler(_:forURLScheme:)` cannot be called afterwards.
+/// One instance per open document, built with that document's directory and
+/// registered by `MarkdownWebView.configuration(documentDirectory:)`.
 ///
-/// This is deliberately thin. The only decision that matters — which files a
-/// document is allowed to reach — lives in `DocumentResourceResolver`, which
-/// has no WebKit dependency and is unit-tested; this type's job is bridging
-/// that decision to the three `WKURLSchemeTask` callbacks WebKit expects.
+/// Thin on purpose: which files a document may reach is decided by
+/// `DocumentResourceResolver`, and this only bridges that decision to the
+/// `WKURLSchemeTask` callbacks WebKit expects.
 final class DocumentResourceSchemeHandler: NSObject, WKURLSchemeHandler {
     private let documentDirectory: URL
 
@@ -30,10 +26,10 @@ final class DocumentResourceSchemeHandler: NSObject, WKURLSchemeHandler {
               let fileURL = DocumentResourceResolver.fileURL(for: requestURL, documentDirectory: documentDirectory),
               let data = try? Data(contentsOf: fileURL)
         else {
-            // A refused or unreadable resource fails the request rather than
-            // returning empty bytes: a failure is a visibly broken image or
-            // dead link, which `CONTEXT.md`'s first floor asks for, where a
-            // zero-length 200 would render as nothing at all.
+            // Fails the request rather than answering with empty bytes. A
+            // failure draws a broken image the reader can see; a
+            // zero-length 200 renders as nothing, which is the silent
+            // omission this app must never produce.
             urlSchemeTask.didFailWithError(CocoaError(.fileReadNoSuchFile))
             return
         }

@@ -105,11 +105,11 @@ struct RelativePathTests {
 
     // MARK: - Sibling document links (issue #18, user story 2)
 
-    /// The other half of issue #18: a link to a sibling Markdown file has to
-    /// work, not just an image. That path ends in
-    /// `MarkdownWebView.Coordinator.decidePolicyFor`, which is
-    /// coverage-excluded glue — so per `CONTEXT.md`'s third floor its
-    /// behaviour is owed an integration test rather than a unit one.
+    /// The other half of issue #18: a link to a sibling Markdown file, not
+    /// just an image. That path ends in
+    /// `MarkdownWebView.Coordinator.decidePolicyFor`, a coverage-excluded
+    /// file, and an exclusion is what obliges a test here rather than a unit
+    /// one (`docs/agents/definition-of-done.md`).
     ///
     /// Driven through the whole real pipeline: Markdown on disk →
     /// `LiveDocument` (which applies `DocumentRelativeLinks`) → the shell →
@@ -184,20 +184,17 @@ struct RelativePathTests {
         base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )!
 
-    /// Loads the real shell exactly as `MarkdownWebView` does — including
-    /// registering a `folium-doc:` scheme handler for `documentDirectory`,
-    /// the same wiring `MarkdownWebView.makeNSView` does before creating its
-    /// web view (`setURLSchemeHandler(_:forURLScheme:)` cannot be called
-    /// afterwards). No window and no `Coordinator` here: nothing in this
-    /// suite clicks a link or waits on an animation, which is what
-    /// `ContentSecurityPolicyTests` needs those for.
+    /// Loads the real shell through the app's own
+    /// `MarkdownWebView.configuration(documentDirectory:)`, so the
+    /// `folium-doc:` handler under test is the one the running app registers
+    /// rather than one this suite set up to match. No window and no
+    /// `Coordinator` here: nothing in this suite clicks a link or waits on an
+    /// animation, which is what `ContentSecurityPolicyTests` needs those for.
     private func loadedShell(documentDirectory: URL? = nil) async throws -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        if let documentDirectory {
-            let schemeHandler = DocumentResourceSchemeHandler(documentDirectory: documentDirectory)
-            configuration.setURLSchemeHandler(schemeHandler, forURLScheme: DocumentResourceResolver.scheme)
-        }
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1012, height: 800), configuration: configuration)
+        let webView = WKWebView(
+            frame: NSRect(x: 0, y: 0, width: 1012, height: 800),
+            configuration: MarkdownWebView.configuration(documentDirectory: documentDirectory)
+        )
         let waiter = NavigationWaiter()
         webView.navigationDelegate = waiter
         webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
@@ -214,14 +211,9 @@ struct RelativePathTests {
         documentDirectory: URL,
         openDocument: @escaping (URL) -> Void
     ) async throws -> (webView: WKWebView, waiter: CoordinatorWaiter) {
-        let configuration = WKWebViewConfiguration()
-        configuration.setURLSchemeHandler(
-            DocumentResourceSchemeHandler(documentDirectory: documentDirectory),
-            forURLScheme: DocumentResourceResolver.scheme
-        )
         let webView = WKWebView(
             frame: NSRect(x: 0, y: 0, width: 1012, height: 800),
-            configuration: configuration
+            configuration: MarkdownWebView.configuration(documentDirectory: documentDirectory)
         )
         let coordinator = MarkdownWebView.Coordinator(
             documentDirectory: documentDirectory,

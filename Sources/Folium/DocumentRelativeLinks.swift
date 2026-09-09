@@ -9,20 +9,15 @@ import Foundation
 /// resolves it against whatever page is currently loaded, which is the
 /// shell, not the document.
 ///
-/// An early version of this fix rewrote references to absolute `file://`
-/// URLs and widened `loadFileURL`'s read-access grant to cover the
-/// document's directory. Measurement against the real shell (see
-/// `docs/adr/0007-document-resources-via-url-scheme.md`) found that grant
-/// has to include whatever directory the shell itself loads from, and in
-/// production there is no directory that contains both
-/// `Folium.app/Contents/Resources` and an arbitrary document under the
-/// user's home folder. This function now targets the private `folium-doc:`
-/// scheme instead: `DocumentResourceSchemeHandler` reads the bytes on the
-/// app's own process, so the web content process never receives a
-/// filesystem grant at all. The fix still belongs here, in Swift, rather
-/// than a `<base>` tag in the page shell: the CSP's `base-uri 'none'`
-/// (issue #17) forecloses that route deliberately, so relative references
-/// have to be rewritten before they ever reach the DOM.
+/// So references are rewritten to the private `folium-doc:` scheme, which
+/// `DocumentResourceSchemeHandler` serves. Why that scheme rather than a
+/// widened read-access grant:
+/// [ADR 0007](../../docs/adr/0007-document-resources-via-url-scheme.md).
+///
+/// The rewriting happens here, in Swift, rather than through a `<base>` tag
+/// in the shell. The shell's CSP sets `base-uri 'none'`, which forecloses
+/// that tag on purpose (issue #17), so a relative reference has to be
+/// resolved before it reaches the DOM.
 enum DocumentRelativeLinks {
     /// Rewrites every document-relative `src`/`href` value in `html` to a
     /// `folium-doc://doc/<relative path>` URL, expressed relative to
@@ -46,11 +41,9 @@ enum DocumentRelativeLinks {
     /// - Pure fragments (`#usage`): nothing to resolve; `NavigationPolicy`
     ///   already handles in-page scrolling.
     ///
-    /// Conservative on top of that: a value this function doesn't recognize
-    /// is left exactly as it was rather than rewritten into something that
-    /// might not parse. `CONTEXT.md`'s first floor is that the document says
-    /// what the file says — a value this function can't confidently resolve
-    /// is safer left broken in the familiar way than replaced with a guess.
+    /// A value this function doesn't recognize is left exactly as it was.
+    /// One it can't confidently resolve is safer left broken in the familiar
+    /// way than replaced with a guess at what the author meant.
     static func resolve(_ html: String, relativeTo directory: URL) -> String {
         guard let regex = attributeValueRegex else { return html }
         let fullRange = NSRange(html.startIndex..., in: html)
@@ -93,24 +86,24 @@ enum DocumentRelativeLinks {
             return nil
         }
         guard !hasScheme(value) else { return nil }
-        // `URL(string:relativeTo:)` against the real directory does the
-        // actual reference-resolution work — walking `..` segments,
-        // decoding what's already percent-encoded without doing it twice —
-        // exactly as it did when this produced a `file://` URL. What's new
-        // is turning that resolved location into a `folium-doc:` URL naming
-        // the same file relative to `directory`, since the scheme handler
-        // on the other end resolves every request that way too (see
-        // `DocumentResourceResolver`).
+        // `URL(string:relativeTo:)` does the reference resolution: walking
+        // `..` segments, and decoding what is already percent-encoded
+        // without doing it twice.
         guard let resolved = URL(string: value, relativeTo: directory)?.absoluteURL else { return nil }
         return documentSchemeURLString(for: resolved, relativeTo: directory)
     }
 
     /// Rebuilds `resolved` (an absolute `file://` location) as a
     /// `folium-doc://doc/<relative path>` URL, walking up out of `directory`
-    /// with `..` segments if the reference pointed above it. Query and
-    /// fragment carry over unchanged — a document-relative reference like
-    /// `sibling.md#section` still has to land on the right anchor once
-    /// `NavigationPolicy` opens it.
+    /// with `..` segments if the reference pointed above it.
+    ///
+    /// Query and fragment carry over unchanged, so the rewritten URL still
+    /// names what the author wrote. Nothing acts on the fragment yet:
+    /// `DocumentResourceResolver` resolves a path, and `.openDocument` hands
+    /// `NSWorkspace` that path, so clicking `sibling.md#section` opens the
+    /// sibling at the top rather than at the section. Scrolling a
+    /// newly-opened document to an anchor means carrying the fragment
+    /// through `DocumentGroup`, which is its own piece of work.
     private static func documentSchemeURLString(for resolved: URL, relativeTo directory: URL) -> String? {
         // `.standardized`, not `.standardizedFileURL`: the latter — like
         // `.resolvingSymlinksInPath()` — consults the filesystem-

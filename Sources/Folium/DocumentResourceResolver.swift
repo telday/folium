@@ -3,24 +3,17 @@ import Foundation
 /// Decides which files on disk a rendered document is allowed to reach
 /// through the private `folium-doc:` scheme (issue #18).
 ///
-/// `MarkdownWebView` used to widen `loadFileURL`'s `allowingReadAccessTo`
-/// grant to make relative images and links work, but that grant is given to
-/// the whole web content process — every script the page runs, not just the
-/// `<img>`/`<a>` tags Folium itself renders. There is also no directory that
-/// contains both the shell (inside `Folium.app/Contents/Resources`) and an
-/// arbitrary document (anywhere under the user's home directory) for the
-/// grant to name. `DocumentResourceSchemeHandler` reads bytes on the app's
-/// own process instead and hands them to the web content process one file at
-/// a time, and this type is the policy that governs which files that is —
-/// kept here, with no WebKit import, so the policy is unit-tested rather
-/// than trusted to a directory handed to WebKit. See
-/// `docs/adr/0007-document-resources-via-url-scheme.md`.
+/// `DocumentResourceSchemeHandler` reads the bytes and this decides whether
+/// it may. Kept apart from that handler, and free of any WebKit import, so
+/// the decision is ordinary unit-tested Swift. See
+/// [ADR 0007](../../docs/adr/0007-document-resources-via-url-scheme.md) for
+/// why a scheme handler rather than a read-access grant.
 enum DocumentResourceResolver {
     /// The custom scheme `DocumentRelativeLinks` rewrites document-relative
     /// `src`/`href` values into, and `DocumentResourceSchemeHandler`
-    /// registers a handler for. Kept here, in the logic layer, so
-    /// `NavigationPolicy` can compare against it without importing WebKit
-    /// just to name the scheme `DocumentResourceSchemeHandler` also uses.
+    /// registers a handler for. Defined here so the three places that have
+    /// to agree on the string can't drift, and so `NavigationPolicy` can
+    /// name it without importing WebKit.
     static let scheme = "folium-doc"
 
     /// Maps an incoming `folium-doc:` request to the real file it names, or
@@ -29,17 +22,17 @@ enum DocumentResourceResolver {
     ///
     /// A rendered Markdown document is untrusted input — it might be a repo
     /// checkout nobody has read yet — so every one of these checks matters:
-    /// - The request path is resolved against `documentDirectory`, then
+    /// - The request path is resolved against `documentDirectory` and then
     ///   canonicalised (`standardized`, `resolvingSymlinksInPath`) *before*
-    ///   the containment check runs. Canonicalising first is what catches
-    ///   both `folium-doc://doc/../../../etc/passwd` (a `..` sequence
-    ///   written directly into a document, since `DocumentRelativeLinks`
-    ///   only rewrites plain relative references — a `folium-doc:` URL
-    ///   authored by hand in the source Markdown reaches here unchanged) and
-    ///   a symlink inside the document's own directory that points outside
-    ///   it: checking containment against the *un*canonicalised path would
-    ///   miss both, because neither `..` nor a symlink target is visible in
-    ///   the string until it's resolved.
+    ///   the containment check runs. Neither a `..` sequence nor a symlink's
+    ///   target is visible in the path string until it is resolved, so a
+    ///   check against the uncanonicalised path would miss both.
+    ///
+    ///   A document can reach here with either. `DocumentRelativeLinks`
+    ///   rewrites only plain relative references, so a `folium-doc:` URL an
+    ///   author typed into the Markdown by hand arrives unchanged — `..`
+    ///   segments included — and a symlink can sit in the document's own
+    ///   directory pointing anywhere.
     /// - Only a plain, regular file is served — never a directory (which
     ///   would let a document list the contents of the folder it's in) and
     ///   never a device file, pipe, or socket.
@@ -72,12 +65,11 @@ enum DocumentResourceResolver {
         return path.hasPrefix("/") ? String(path.dropFirst()) : path
     }
 
-    /// Whether `candidate` is `directory` itself or something inside it.
-    /// String-prefix comparison, not `URL`'s own relationship APIs: both
-    /// URLs are already standardized absolute file paths at this point, and
-    /// a prefix check on the path string is the plainest way to state "is
-    /// under" without pulling in path-component-by-component comparison for
-    /// no added safety.
+    /// Whether `candidate` is something inside `directory`. Both are already
+    /// canonical absolute paths here, so a prefix check on the path string
+    /// says "is under" as safely as a component-by-component walk would.
+    /// The trailing separator is what stops `/docs-private` from counting as
+    /// inside `/docs`.
     private static func isContained(_ candidate: URL, in directory: URL) -> Bool {
         let directoryPath = directory.path.hasSuffix("/") ? directory.path : directory.path + "/"
         return candidate.path.hasPrefix(directoryPath)

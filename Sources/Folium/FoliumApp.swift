@@ -57,21 +57,20 @@ struct FoliumApp: App {
 private struct DocumentView: View {
     @StateObject private var document: LiveDocument
     @ObservedObject var scrollKeys: ScrollKeyStore
-    /// Passed straight through to `MarkdownWebView` — see its
-    /// `documentDirectory` property for why (issue #18).
-    let documentDirectory: URL?
 
     init(text: String, fileURL: URL?, scrollKeys: ScrollKeyStore) {
         _document = StateObject(wrappedValue: LiveDocument(text: text, fileURL: fileURL))
         self.scrollKeys = scrollKeys
-        documentDirectory = fileURL?.deletingLastPathComponent()
     }
 
     var body: some View {
         MarkdownWebView(
             bodyHTML: document.bodyHTML,
             scrollKeys: scrollKeys.bindings,
-            documentDirectory: documentDirectory
+            // Taken from the document rather than derived again here, so the
+            // directory the body's references were rewritten against is the
+            // one the scheme handler resolves them back against (issue #18).
+            documentDirectory: document.documentDirectory
         )
     }
 }

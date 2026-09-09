@@ -92,10 +92,11 @@ struct ReloadCoalescerTests {
     }
 
     @Test func aWindowThatOutlivesTheCoalescerDoesNothing() {
-        // The window closing after the document itself has gone away — the
-        // window closed while the file's own document window was closing.
-        // `[weak self]` is what keeps that from touching a deallocated
-        // instance; this proves the closure gives up cleanly instead.
+        // A coalescing window that elapses after the coalescer itself is
+        // gone: the user closed the document's window mid-burst, so
+        // `LiveDocument` — and the coalescer it owns — deallocated with a
+        // scheduled reload still pending. `noteChange`'s `[weak self]` is
+        // what keeps that closure from reloading through a dead instance.
         let scheduler = ManualScheduler()
         let reloads = Counter()
         var coalescer: ReloadCoalescer? = ReloadCoalescer(scheduler: scheduler, reload: reloads.increment)
