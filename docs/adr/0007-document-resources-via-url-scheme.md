@@ -100,6 +100,22 @@ instead.
   `file:` used for the shell's own bundled assets. `script-src`/`style-src`
   deliberately do not: nothing a rendered document references through this
   scheme is ever treated as code.
+- **Rendering a document now costs a second regex pass over the body HTML.**
+  Measured in release against `scripts/make-bench-fixture.sh`'s 514 KB
+  fixture: `MarkdownRenderer.renderHTML` 4.3 ms, `DocumentRelativeLinks
+  .resolve` 8.9 ms on top — the same order as the `CodeBlockDecorator` pass
+  already made over the same body (6.1 ms). Effectively all of it is the ICU
+  scan, not the eight rewrites it finds; a hand-written substring scan using
+  `String.range(of:)` was measured at 25 ms, three times *slower*, so the
+  regex is the fast option here rather than the lazy one. `make bench` after
+  this change reports the same four budget overages `CONTEXT.md` records
+  against issue #48, unmoved — a live-reload repaint of that fixture is
+  ~311 ms, so this pass is a low-single-digit percentage of it, and the
+  fixture is a deliberate stress case rather than a document anyone reads.
+  Beating it would mean scanning UTF-8 bytes by hand in the one place an
+  untrusted document's references are parsed; left to whoever takes on
+  issue #48's budget work, with the numbers above so it needn't be
+  re-measured from scratch.
 - `DocumentResourceSchemeHandler` cannot be unit-tested — `WKURLSchemeTask`
   only exists inside a live `WKWebView` — so it is excluded from the
   logic-layer coverage requirement (`scripts/coverage.sh`) and its behavior,
