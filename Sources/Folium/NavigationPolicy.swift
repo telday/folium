@@ -35,21 +35,24 @@ enum NavigationDecision: Equatable {
 /// glue — see `docs/agents/definition-of-done.md`.
 enum NavigationPolicy {
     /// - Parameters:
-    ///   - shellURL: `MarkdownPage.pageURL`, the shell's own address. A
-    ///     request whose URL matches this one, fragment aside, is the shell
-    ///     navigating to (or within) itself rather than following a link.
+    ///   - shellURLs: `MarkdownPage.shellURLs`, the addresses of both page
+    ///     shells. A request whose URL matches one of them, fragment aside,
+    ///     is the shell navigating to (or within) itself rather than
+    ///     following a link. Both count, because opting a document into
+    ///     remote content (issue #19) swaps one shell for the other, and an
+    ///     in-page anchor link has to keep working either side of that.
     ///   - documentDirectory: the open document's own directory, needed to
     ///     resolve a `folium-doc:` link back to the real file it names. `nil`
     ///     for a document with nothing on disk, which has no such links to
     ///     resolve in the first place.
-    static func decide(_ request: NavigationRequest, shellURL: URL, documentDirectory: URL?) -> NavigationDecision {
+    static func decide(_ request: NavigationRequest, shellURLs: [URL], documentDirectory: URL?) -> NavigationDecision {
         guard let url = request.url else { return .block }
 
         if url.scheme == "http" || url.scheme == "https" {
             return .openInBrowser(url)
         }
 
-        if url.strippingFragment() == shellURL.strippingFragment() {
+        if shellURLs.contains(where: { url.strippingFragment() == $0.strippingFragment() }) {
             if let fragment = url.fragment, !fragment.isEmpty {
                 return .scrollToAnchor(fragment)
             }
@@ -121,7 +124,7 @@ private extension URL {
     /// "the shell itself" apart from "a link somewhere else entirely".
     ///
     /// Resolved against its base first, because the two URLs being compared
-    /// reach `decide` in different shapes. `MarkdownPage.pageURL` is built
+    /// reach `decide` in different shapes. `MarkdownPage.shellURLs` is built
     /// on `Bundle.main.resourceURL`, which a real `.app` returns as
     /// *relative* to the bundle — a `baseURL` plus a `relativeString` of
     /// `Contents/Resources/...` — while WebKit hands `decidePolicyFor` the

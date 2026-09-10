@@ -19,6 +19,10 @@ struct MarkdownWebView: NSViewRepresentable {
     /// scheme handler this view registers below, and by `Coordinator` for
     /// resolving a clicked sibling-document link — see issue #18.
     let documentDirectory: URL?
+    /// This document's remote-content policy (issue #19). Read here to
+    /// choose which shell to load; written by `RemoteContentReporter` below,
+    /// which the shell posts Content-Security-Policy refusals to.
+    @ObservedObject var remoteContent: RemoteContentState
 
     func makeCoordinator() -> Coordinator {
         Coordinator(documentDirectory: documentDirectory)
@@ -31,8 +35,19 @@ struct MarkdownWebView: NSViewRepresentable {
     /// `folium-doc:` handler registered here is the whole of issue #18's
     /// resource path — registered anywhere else, the integration suite would
     /// be proving its own wiring works rather than the app's.
-    static func configuration(documentDirectory: URL?) -> WKWebViewConfiguration {
+    static func configuration(
+        documentDirectory: URL?,
+        remoteContent: RemoteContentState
+    ) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
+        // The receiving end of `Resources/remote-content.js`. Registering it
+        // is also what makes `window.webkit.messageHandlers
+        // .foliumRemoteContent` exist at all — that object is absent unless
+        // something claimed the name, which is why the script checks.
+        configuration.userContentController.add(
+            RemoteContentReporter(state: remoteContent),
+            name: RemoteContent.messageName
+        )
         guard let documentDirectory else {
             // A document with nothing on disk gets no handler: a folium-doc:
             // request has nowhere to resolve against, so it could only fail.
@@ -49,10 +64,15 @@ struct MarkdownWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> ScrollKeyWebView {
-        let webView = ScrollKeyWebView(configuration: Self.configuration(documentDirectory: documentDirectory))
+        let configuration = Self.configuration(
+            documentDirectory: documentDirectory,
+            remoteContent: remoteContent
+        )
+        let webView = ScrollKeyWebView(configuration: configuration)
         webView.scrollKeys = scrollKeys
         webView.navigationDelegate = context.coordinator
-        webView.loadFileURL(MarkdownPage.pageURL, allowingReadAccessTo: MarkdownPage.resourceBaseURL)
+        _ = context.coordinator.state.willLoadShell(allowingRemoteContent: remoteContent.isAllowed)
+        loadShell(into: webView)
         return webView
     }
 
@@ -60,9 +80,25 @@ struct MarkdownWebView: NSViewRepresentable {
         // Rebinding a key in Preferences has to reach the documents already
         // open, not just the next one.
         webView.scrollKeys = scrollKeys
+        // Clicking "Load" arrives here: the shell in the window enforces the
+        // policy the user just changed, so it has to be replaced rather than
+        // adjusted. The reload re-parses every stylesheet and all of
+        // highlight.js — the cost `MarkdownWebViewState` exists to avoid on
+        // every content change. Paid once per document at most, on an
+        // explicit click, because opting in is one-way.
+        if context.coordinator.state.willLoadShell(allowingRemoteContent: remoteContent.isAllowed) {
+            loadShell(into: webView)
+        }
         if let ready = context.coordinator.state.render(bodyHTML: bodyHTML) {
             context.coordinator.inject(ready, into: webView)
         }
+    }
+
+    private func loadShell(into webView: WKWebView) {
+        webView.loadFileURL(
+            MarkdownPage.shellURL(allowingRemoteContent: remoteContent.isAllowed),
+            allowingReadAccessTo: MarkdownPage.resourceBaseURL
+        )
     }
 
     /// Bridges the shell's one-time `didFinish` navigation callback to
@@ -162,7 +198,7 @@ struct MarkdownWebView: NSViewRepresentable {
             )
             let decision = NavigationPolicy.decide(
                 request,
-                shellURL: MarkdownPage.pageURL,
+                shellURLs: MarkdownPage.shellURLs,
                 documentDirectory: documentDirectory
             )
             switch decision {
@@ -180,6 +216,45 @@ struct MarkdownWebView: NSViewRepresentable {
             case .block:
                 decisionHandler(.cancel)
             }
+        }
+    }
+}
+
+/// Delivers the shell's Content-Security-Policy refusals to one document's
+/// `RemoteContentState` (issue #19).
+///
+/// `WKUserContentController.add(_:name:)` holds its handler strongly, and the
+/// controller belongs to the web view's configuration, so this must not hold
+/// the web view back. It holds only the state object, which the document
+/// window owns and the web view does not.
+@MainActor
+final class RemoteContentReporter: NSObject, WKScriptMessageHandler {
+    private let state: RemoteContentState
+
+    init(state: RemoteContentState) {
+        self.state = state
+    }
+
+    /// `message.body` is whatever the page passed to `postMessage`, bridged
+    /// to Foundation types — a JavaScript object arrives as a dictionary.
+    /// Everything in it comes from the rendered document by way of a CSP
+    /// report, so nothing here trusts a field to be present or to be a
+    /// string.
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard let body = message.body as? [String: Any] else { return }
+        switch body["kind"] as? String {
+        case "willRender":
+            state.documentWillRender()
+        case "violation":
+            state.noteViolation(
+                directive: body["directive"] as? String ?? "",
+                blockedURI: body["blockedURI"] as? String ?? ""
+            )
+        default:
+            return
         }
     }
 }

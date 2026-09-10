@@ -12,6 +12,12 @@
 final class MarkdownWebViewState {
     private var isShellLoaded = false
     private var pendingBodyHTML: String?
+    /// What the loaded shell's DOM is currently showing, so an update that
+    /// carries the same body doesn't rebuild it. See `render(bodyHTML:)`.
+    private var renderedBodyHTML: String?
+    /// Which shell the view has been told to load, or `nil` before it has
+    /// loaded any. See `willLoadShell(allowingRemoteContent:)`.
+    private var loadedShellAllowsRemoteContent: Bool?
     var benchMarker: BenchMarker = BenchMarker()
 
     /// Call when the shell's one-time `WKNavigationDelegate` `didFinish`
@@ -20,19 +26,58 @@ final class MarkdownWebViewState {
     func shellDidFinishLoading() -> String? {
         isShellLoaded = true
         defer { pendingBodyHTML = nil }
-        return pendingBodyHTML
+        guard let pending = pendingBodyHTML else { return nil }
+        renderedBodyHTML = pending
+        return pending
     }
 
     /// Call whenever new body content should render. Returns the HTML to
     /// inject immediately if the shell has already loaded, or `nil` if it's
     /// been queued to render once `shellDidFinishLoading()` is called
     /// instead — only the most recent call's content is kept.
+    ///
+    /// Also `nil` when the shell is already showing this exact body. SwiftUI
+    /// calls `updateNSView` for any change to anything the view reads, not
+    /// only for a change to the document, and rebuilding the DOM re-runs
+    /// highlight.js over every code block in it. `CONTEXT.md` budgets a tab
+    /// switch at "≤ 50 ms, no re-render", and this is what makes that true.
+    ///
+    /// It is also what keeps the view from driving itself in a circle. The
+    /// page reports back to `RemoteContentState` on every render (issue
+    /// #19), that report is state the view observes, and observing it
+    /// schedules another `updateNSView` — so a body that re-injected
+    /// unconditionally would ask to be re-injected again, about ten thousand
+    /// times a second. Measured, before this guard existed.
     func render(bodyHTML: String) -> String? {
         guard isShellLoaded else {
             pendingBodyHTML = bodyHTML
             return nil
         }
+        guard bodyHTML != renderedBodyHTML else { return nil }
+        renderedBodyHTML = bodyHTML
         return bodyHTML
+    }
+
+    /// Whether the web view has to load a shell to be showing remote content
+    /// (or not showing it) as `allowingRemoteContent` says (issue #19).
+    ///
+    /// True the first time it is asked, and again whenever the answer
+    /// changes — which happens at most once per document, when the user
+    /// clicks "Load". Opting in cannot be done by editing the page already
+    /// on screen: its Content-Security-Policy came from a `<meta>` tag, and
+    /// that policy is fixed from the moment the parser read it.
+    ///
+    /// Calling this marks the shell as no longer loaded, so the body handed
+    /// to `render(bodyHTML:)` next is queued for the new shell's `didFinish`
+    /// rather than injected into the page on its way out.
+    func willLoadShell(allowingRemoteContent: Bool) -> Bool {
+        guard loadedShellAllowsRemoteContent != allowingRemoteContent else { return false }
+        loadedShellAllowsRemoteContent = allowingRemoteContent
+        isShellLoaded = false
+        // The shell coming in has an empty document in it, so whatever the
+        // one going out was showing has to be injected again.
+        renderedBodyHTML = nil
+        return true
     }
 
     /// Whether an injection's paint should be confirmed at all: only under

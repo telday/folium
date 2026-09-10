@@ -185,7 +185,7 @@ struct RelativePathTests {
     )!
 
     /// Loads the real shell through the app's own
-    /// `MarkdownWebView.configuration(documentDirectory:)`, so the
+    /// `MarkdownWebView.configuration(documentDirectory:remoteContent:)`, so the
     /// `folium-doc:` handler under test is the one the running app registers
     /// rather than one this suite set up to match. No window and no
     /// `Coordinator` here: nothing in this suite clicks a link or waits on an
@@ -193,7 +193,10 @@ struct RelativePathTests {
     private func loadedShell(documentDirectory: URL? = nil) async throws -> WKWebView {
         let webView = WKWebView(
             frame: NSRect(x: 0, y: 0, width: 1012, height: 800),
-            configuration: MarkdownWebView.configuration(documentDirectory: documentDirectory)
+            configuration: MarkdownWebView.configuration(
+                documentDirectory: documentDirectory,
+                remoteContent: RemoteContentState()
+            )
         )
         let waiter = NavigationWaiter()
         webView.navigationDelegate = waiter
@@ -213,7 +216,10 @@ struct RelativePathTests {
     ) async throws -> (webView: WKWebView, waiter: CoordinatorWaiter) {
         let webView = WKWebView(
             frame: NSRect(x: 0, y: 0, width: 1012, height: 800),
-            configuration: MarkdownWebView.configuration(documentDirectory: documentDirectory)
+            configuration: MarkdownWebView.configuration(
+                documentDirectory: documentDirectory,
+                remoteContent: RemoteContentState()
+            )
         )
         let coordinator = MarkdownWebView.Coordinator(
             documentDirectory: documentDirectory,

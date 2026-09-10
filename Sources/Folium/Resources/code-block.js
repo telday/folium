@@ -5,6 +5,13 @@
 // reloading would re-parse every stylesheet and re-parse/recompile all of
 // highlight.js on every single update.
 window.FoliumRenderBody = function (html) {
+  // Before the swap, not after: any Content-Security-Policy refusal this
+  // content provokes is reported asynchronously, and clearing afterwards
+  // would race with — and sometimes erase — the report it caused.
+  if (window.FoliumDocumentWillRender) {
+    window.FoliumDocumentWillRender();
+  }
+
   var article = document.getElementById("markdown-content");
   article.innerHTML = html;
 

@@ -27,6 +27,13 @@ enum MarkdownPage {
     /// is the only thing left to choose.
     static let pageRelativePath = "Resources/page.html"
 
+    /// The opt-in shell (issue #19), beside the default one. Same document,
+    /// same assets; its Content-Security-Policy also admits `http:` and
+    /// `https:` images and media. See the comment inside `page.html` for
+    /// why opting in means loading a second file rather than editing the
+    /// policy of the one already loaded.
+    static let remoteContentPageRelativePath = "Resources/page-remote.html"
+
     /// The base URL `page.html`'s relative `<link>`/`<script src>`
     /// references resolve against, and the read-access grant
     /// `MarkdownWebView` passes to `loadFileURL`.
@@ -58,8 +65,25 @@ enum MarkdownPage {
         return Bundle.module.bundleURL
     }()
 
-    /// The static page shell `MarkdownWebView` loads once via `loadFileURL`.
+    /// The static page shell `MarkdownWebView` loads via `loadFileURL` for
+    /// a document whose remote content is blocked — every document, until
+    /// its window's user says otherwise.
     static let pageURL = resourceBaseURL.appendingPathComponent(pageRelativePath)
+
+    /// The shell loaded in `pageURL`'s place once the user opts this
+    /// document into remote content.
+    static let remoteContentPageURL = resourceBaseURL.appendingPathComponent(remoteContentPageRelativePath)
+
+    /// Which shell a document should be showing.
+    static func shellURL(allowingRemoteContent: Bool) -> URL {
+        allowingRemoteContent ? remoteContentPageURL : pageURL
+    }
+
+    /// Both shells, for `NavigationPolicy`: a request coming from either of
+    /// them is the page navigating within itself, not following a link. A
+    /// list rather than "whichever one is loaded right now" so that nothing
+    /// has to be kept in step with the reload that swaps them.
+    static let shellURLs = [pageURL, remoteContentPageURL]
 
     /// Builds the `evaluateJavaScript` call that renders `bodyHTML` (run
     /// through `CodeBlockDecorator` first) into the already-loaded shell's
