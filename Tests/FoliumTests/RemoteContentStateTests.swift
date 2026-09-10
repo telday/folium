@@ -14,13 +14,13 @@ struct RemoteContentStateTests {
 
     @Test func aBlockedRemoteImageRaisesTheOffer() {
         let state = RemoteContentState()
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
         #expect(state.hasBlockedContent)
     }
 
     @Test func aRefusalTheOptInCouldNotFixRaisesNothing() {
         let state = RemoteContentState()
-        state.noteViolation(directive: "style-src-elem", blockedURI: "https://example.com/theme.css")
+        state.note(RemoteContentViolation(directive: "style-src-elem", blockedURI: "https://example.com/theme.css"))
         #expect(!state.hasBlockedContent)
     }
 
@@ -29,14 +29,14 @@ struct RemoteContentStateTests {
     /// it, or the bar goes on claiming something the file no longer says.
     @Test func aNewRenderClearsWhatTheLastOneBlocked() {
         let state = RemoteContentState()
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
         state.documentWillRender()
         #expect(!state.hasBlockedContent)
     }
 
     @Test func optingInDismissesTheOffer() {
         let state = RemoteContentState()
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
         state.allow()
         #expect(state.isAllowed)
         #expect(!state.hasBlockedContent)
@@ -48,7 +48,7 @@ struct RemoteContentStateTests {
     @Test func aRefusalAfterOptingInDoesNotRaiseTheOfferAgain() {
         let state = RemoteContentState()
         state.allow()
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
         #expect(!state.hasBlockedContent)
     }
 
@@ -80,8 +80,8 @@ struct RemoteContentStateTests {
         #expect(announcements == 0)
 
         // A refusal already reported is not news either.
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/other.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/other.svg"))
         #expect(announcements == 1)
     }
 
@@ -91,7 +91,7 @@ struct RemoteContentStateTests {
         let subscription = state.objectWillChange.sink { _ in announcements += 1 }
         defer { subscription.cancel() }
 
-        state.noteViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg")
+        state.note(RemoteContentViolation(directive: "img-src", blockedURI: "https://example.com/badge.svg"))
         state.documentWillRender()
         state.allow()
         #expect(announcements == 3)

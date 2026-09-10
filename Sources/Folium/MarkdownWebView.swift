@@ -71,7 +71,10 @@ struct MarkdownWebView: NSViewRepresentable {
         let webView = ScrollKeyWebView(configuration: configuration)
         webView.scrollKeys = scrollKeys
         webView.navigationDelegate = context.coordinator
-        _ = context.coordinator.state.willLoadShell(allowingRemoteContent: remoteContent.isAllowed)
+        // The answer is discarded: the first shell is loaded either way.
+        // The call is what records which one, so the next update can tell
+        // whether it changed.
+        _ = context.coordinator.state.needsShellReload(allowingRemoteContent: remoteContent.isAllowed)
         loadShell(into: webView)
         return webView
     }
@@ -86,7 +89,7 @@ struct MarkdownWebView: NSViewRepresentable {
         // highlight.js — the cost `MarkdownWebViewState` exists to avoid on
         // every content change. Paid once per document at most, on an
         // explicit click, because opting in is one-way.
-        if context.coordinator.state.willLoadShell(allowingRemoteContent: remoteContent.isAllowed) {
+        if context.coordinator.state.needsShellReload(allowingRemoteContent: remoteContent.isAllowed) {
             loadShell(into: webView)
         }
         if let ready = context.coordinator.state.render(bodyHTML: bodyHTML) {
@@ -237,25 +240,19 @@ final class RemoteContentReporter: NSObject, WKScriptMessageHandler {
 
     /// `message.body` is whatever the page passed to `postMessage`, bridged
     /// to Foundation types — a JavaScript object arrives as a dictionary.
-    /// Everything in it comes from the rendered document by way of a CSP
-    /// report, so nothing here trusts a field to be present or to be a
-    /// string.
+    /// `RemoteContentViolation` does the decoding, so this stays a routing
+    /// step and the field names live in one place.
     func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
         guard let body = message.body as? [String: Any] else { return }
-        switch body["kind"] as? String {
-        case "willRender":
+        if body["kind"] as? String == RemoteContent.renderKind {
             state.documentWillRender()
-        case "violation":
-            state.noteViolation(
-                directive: body["directive"] as? String ?? "",
-                blockedURI: body["blockedURI"] as? String ?? ""
-            )
-        default:
             return
         }
+        guard let violation = RemoteContentViolation(message: body) else { return }
+        state.note(violation)
     }
 }
 

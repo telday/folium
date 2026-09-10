@@ -1,22 +1,16 @@
-import AppKit
 import Testing
 import WebKit
 @testable import Folium
 
-/// Seam tests for issue #19: a document's remote content stays blocked until
-/// that document's own user asks for it, and asking actually permits the
-/// load.
+/// Issue #19's second half: what taking the offer does, who it applies to,
+/// and what a live reload does to it.
 ///
-/// Everything here is asserted on what `Resources/remote-content.js` reports
-/// back over the real page-to-native channel, driven through the real
-/// `FoliumRenderBody` injection path. That is the seam this app owns — the
-/// browser's own `securitypolicyviolation` event is upstream's, and whether
-/// a badge server answers is the network's.
-///
-/// The event fires before a connection is opened, so none of these tests
-/// need the target to be reachable. `example.invalid` is an IANA-reserved
-/// domain guaranteed never to resolve, which is what keeps them
-/// deterministic on a machine with no network.
+/// These play the sequence `MarkdownWebView.updateNSView` plays when the
+/// bar's button is pressed — `allow()`, ask `MarkdownWebViewState` which
+/// shell to load, load it, let the queued body arrive on `didFinish` —
+/// against the real state objects, the real reporter, and the real shells.
+/// Only SwiftUI's call into `updateNSView` is stood in for; everything it
+/// would do is production code.
 @MainActor
 @Suite(.serialized)
 struct RemoteContentOptInTests {
@@ -24,249 +18,141 @@ struct RemoteContentOptInTests {
         AppKitHost.startIfNeeded()
     }
 
-    // MARK: - Blocked by default
+    private let body = #"<img id="badge" src="https://example.invalid/badge.svg">"#
 
-    @Test func aRemoteImageIsBlockedAndReportedUnderTheDefaultShell() async throws {
-        let reports = try await reportsFromShell(
-            allowingRemoteContent: false,
-            rendering: #"<img src="https://example.invalid/badge.svg">"#
-        )
+    /// The Definition of Done's second half: that *opting in* permits the
+    /// load, not merely that the opt-in shell would.
+    @Test func takingTheOfferLoadsTheDocumentsRemoteContent() async throws {
+        let document = try await OpenDocument()
+        try await document.render(body, untilBlocked: true)
+        #expect(document.state.hasBlockedContent, "the offer was never raised, so there was nothing to take")
 
-        let violation = try #require(
-            reports.first { $0.kind == "violation" },
-            "the shell refused the remote image without reporting it"
-        )
-        #expect(violation.directive.hasPrefix("img-src"))
-        #expect(violation.blockedURI.contains("example.invalid"))
-        // The whole point of reporting it: this is what raises the offer.
-        #expect(RemoteContent.isLoadable(directive: violation.directive, blockedURI: violation.blockedURI))
+        try await document.takeTheOffer(redrawing: body)
+
+        // The reload landed on the opt-in shell, and the queued body came
+        // back with it rather than being lost in the swap.
+        #expect(document.webView.url?.lastPathComponent == "page-remote.html")
+        let restored = try await document.webView.evaluateJavaScript("!!document.getElementById('badge')")
+        #expect(restored as? Bool == true, "the document did not survive the shell swap")
+        #expect(!document.state.hasBlockedContent, "the offer is still up after it was taken")
     }
 
-    /// A live reload that removes the last remote image has to take the
-    /// offer with it. Otherwise the bar goes on claiming something the file
-    /// no longer says — the same class of untruth as a missing image.
+    /// User story 3: "I want that choice to apply to this document only, so
+    /// that trusting one file doesn't weaken the guarantee everywhere."
+    @Test func optingOneDocumentInLeavesEveryOtherDocumentBlocked() async throws {
+        let trusted = try await OpenDocument()
+        // A second document, already open when the first one is trusted.
+        let alreadyOpen = try await OpenDocument()
+
+        try await trusted.render(body, untilBlocked: true)
+        try await trusted.takeTheOffer(redrawing: body)
+        #expect(trusted.webView.url?.lastPathComponent == "page-remote.html")
+
+        // A third, opened *after* the first was trusted. This is the leak
+        // that matters most: a per-window choice smuggled through a shared
+        // default would be read when the next window is built, so a document
+        // already open when the choice was made could stay correct while
+        // every later one silently inherits it.
+        let openedLater = try await OpenDocument()
+
+        for (document, name) in [
+            (alreadyOpen, "the document already open"),
+            (openedLater, "the document opened afterwards")
+        ] {
+            #expect(!document.state.isAllowed, "\(name) inherited the opt-in")
+            #expect(document.webView.url?.lastPathComponent == "page.html", "\(name) is on the opt-in shell")
+            try await document.render(body, untilBlocked: true)
+            #expect(document.state.hasBlockedContent, "\(name) stopped offering to load its own remote content")
+        }
+    }
+
+    /// A live reload that removes the last remote image has to take the offer
+    /// with it. Otherwise the bar goes on claiming something the file no
+    /// longer says — the same class of untruth as a missing image.
     @Test func aLiveReloadThatRemovesTheLastRemoteImageWithdrawsTheOffer() async throws {
-        let (webView, state) = try await shellReportingToItsOwnState()
+        let document = try await OpenDocument()
 
-        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
-        #expect(state.hasBlockedContent)
+        try await document.render(body, untilBlocked: true)
+        #expect(document.state.hasBlockedContent)
 
-        try await render("<p>The badges are gone.</p>", into: webView)
-        #expect(!state.hasBlockedContent)
+        try await document.render("<p>The badges are gone.</p>", untilBlocked: false)
+        #expect(!document.state.hasBlockedContent)
     }
 
     /// And the other direction: a reload that introduces a remote image has
-    /// to raise the offer, even though the render that precedes it clears
+    /// to raise the offer, even though the render preceding it clears
     /// whatever the last one found.
     @Test func aLiveReloadThatAddsARemoteImageRaisesTheOffer() async throws {
-        let (webView, state) = try await shellReportingToItsOwnState()
+        let document = try await OpenDocument()
 
-        try await render("<p>Nothing remote here yet.</p>", into: webView)
-        #expect(!state.hasBlockedContent)
+        try await document.render("<p>Nothing remote here yet.</p>", untilBlocked: false)
+        #expect(!document.state.hasBlockedContent)
 
-        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
-        #expect(state.hasBlockedContent)
+        try await document.render(body, untilBlocked: true)
+        #expect(document.state.hasBlockedContent)
     }
 
-    @Test func aDocumentWithNoRemoteContentReportsNothingToOffer() async throws {
-        let reports = try await reportsFromShell(
-            allowingRemoteContent: false,
-            rendering: "<p>Just words.</p>"
-        )
-        #expect(!reports.contains { $0.kind == "violation" })
+    /// Trusting a document survives its live reload: it is still the same
+    /// file, and re-asking on every save would make the app unusable beside
+    /// the editor `CONTEXT.md` names as the workflow.
+    @Test func aLiveReloadAfterOptingInDoesNotAskAgain() async throws {
+        let document = try await OpenDocument()
+        try await document.render(body, untilBlocked: true)
+        try await document.takeTheOffer(redrawing: body)
+
+        try await document.render(#"<img src="https://example.invalid/other.svg">"#, untilBlocked: false)
+        #expect(document.state.isAllowed)
+        #expect(!document.state.hasBlockedContent, "the reload asked the user again")
+        #expect(document.webView.url?.lastPathComponent == "page-remote.html")
     }
 
-    // MARK: - The opt-in permits the load
-
-    @Test func aRemoteImageIsNotBlockedUnderTheOptInShell() async throws {
-        let reports = try await reportsFromShell(
-            allowingRemoteContent: true,
-            rendering: #"<img src="https://example.invalid/badge.svg">"#
-        )
-        #expect(!reports.contains { $0.kind == "violation" })
-    }
-
-    /// Cleartext too. Blocking it after the user opted in would leave those
-    /// images missing with the offer already dismissed and no way to ask
-    /// again.
-    @Test func aCleartextRemoteImageIsNotBlockedUnderTheOptInShell() async throws {
-        let reports = try await reportsFromShell(
-            allowingRemoteContent: true,
-            rendering: #"<img src="http://example.invalid/badge.svg">"#
-        )
-        #expect(!reports.contains { $0.kind == "violation" })
-    }
-
-    /// The positive control for every "no violation" assertion above.
-    ///
-    /// Those tests read "nothing was refused" — which is also what a shell
-    /// that failed to load, or that carries no policy at all, would produce.
-    /// This proves the opt-in shell is a working page with its policy in
-    /// force: its own scripts ran, and it still refuses what it should.
-    @Test func theOptInShellIsAWorkingShellWithItsPolicyStillInForce() async throws {
-        let (webView, collector) = try await loadedShell(allowingRemoteContent: true)
-        defer { _ = collector }
-
-        // The shell's own bundled assets loaded under its CSP: highlight.js
-        // defines window.hljs, and code-block.js defines FoliumRenderBody.
-        let scriptsRan = try await webView.evaluateJavaScript(
-            "typeof window.hljs === 'object' && typeof window.FoliumRenderBody === 'function'"
-        )
-        #expect(scriptsRan as? Bool == true)
-
-        // And the policy is still refusing things — it was relaxed, not removed.
-        _ = try await webView.evaluateJavaScript(
-            MarkdownPage.renderBodyScript(bodyHTML: #"<link rel="stylesheet" href="https://example.invalid/x.css">"#)
-        )
-        try await Task.sleep(for: Self.reportSettlingTime)
-        #expect(collector.reports.contains { $0.kind == "violation" })
-    }
-
-    /// Opting in buys remote images, and nothing else. A remote stylesheet
-    /// stays refused, and — because loading it is not something the opt-in
-    /// could ever deliver — it must not raise the offer either.
-    @Test func aRemoteStylesheetStaysBlockedUnderBothShellsAndOffersNothing() async throws {
-        for allowingRemoteContent in [false, true] {
-            let reports = try await reportsFromShell(
-                allowingRemoteContent: allowingRemoteContent,
-                rendering: #"<link rel="stylesheet" href="https://example.invalid/theme.css">"#
-            )
-
-            let violation = try #require(
-                reports.first { $0.kind == "violation" },
-                "a remote stylesheet was not refused (opt-in: \(allowingRemoteContent))"
-            )
-            #expect(violation.directive.hasPrefix("style-src"))
-            #expect(!RemoteContent.isLoadable(directive: violation.directive, blockedURI: violation.blockedURI))
-        }
-    }
-
-    // MARK: - The app's own reporter, not a stand-in
-
-    /// Everything above collects reports with a test double, to read them.
-    /// This drives the same channel into the real `RemoteContentReporter`
-    /// and the real `RemoteContentState`, so the production translation from
-    /// a posted message to a raised offer is covered too — that class lives
-    /// in `MarkdownWebView.swift`, which is excluded from the unit-coverage
-    /// requirement.
-    @Test func theRealReporterRaisesTheOfferOnTheRealState() async throws {
-        let (webView, state) = try await shellReportingToItsOwnState()
-
-        #expect(!state.hasBlockedContent)
-        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
-        #expect(state.hasBlockedContent)
-        // Raising the offer must not be mistaken for taking it.
-        #expect(!state.isAllowed)
-    }
-
-    /// Loads the default shell wired to the app's real `RemoteContentReporter`
-    /// and a real `RemoteContentState`, through the app's own
-    /// `MarkdownWebView.configuration`.
-    private func shellReportingToItsOwnState() async throws -> (webView: WKWebView, state: RemoteContentState) {
-        let state = RemoteContentState()
-        let configuration = MarkdownWebView.configuration(documentDirectory: nil, remoteContent: state)
-        let webView = WKWebView(frame: Self.viewFrame, configuration: configuration)
-        let waiter = NavigationFinishWaiter()
-        webView.navigationDelegate = waiter
-        webView.loadFileURL(
-            MarkdownPage.shellURL(allowingRemoteContent: false),
-            allowingReadAccessTo: MarkdownPage.resourceBaseURL
-        )
-        await waiter.waitUntilFinished()
-        return (webView, state)
-    }
-
-    /// Renders a body through the production injection path and waits for
-    /// whatever the page reports about it to arrive.
-    private func render(_ bodyHTML: String, into webView: WKWebView) async throws {
-        _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: bodyHTML))
-        try await Task.sleep(for: Self.reportSettlingTime)
-    }
-
-    // MARK: - Helpers
-
-    private static let viewFrame = NSRect(x: 0, y: 0, width: 1012, height: 800)
-
-    /// How long to let the page's reports arrive. They are posted during the
-    /// injection, not after a delay, so this is a ceiling for the case
-    /// something regresses rather than a duration anything depends on.
-    private static let reportSettlingTime = Duration.milliseconds(600)
-
-    /// Loads a shell with a report collector attached to the same message
-    /// name the app registers.
-    private func loadedShell(
-        allowingRemoteContent: Bool
-    ) async throws -> (webView: WKWebView, collector: ReportCollector) {
-        let collector = ReportCollector()
-        let configuration = WKWebViewConfiguration()
-        configuration.userContentController.add(collector, name: RemoteContent.messageName)
-        let webView = WKWebView(frame: Self.viewFrame, configuration: configuration)
-        let waiter = NavigationFinishWaiter()
-        webView.navigationDelegate = waiter
-        webView.loadFileURL(
-            MarkdownPage.shellURL(allowingRemoteContent: allowingRemoteContent),
-            allowingReadAccessTo: MarkdownPage.resourceBaseURL
-        )
-        await waiter.waitUntilFinished()
-        return (webView, collector)
-    }
-
-    /// Renders `bodyHTML` through the production injection path and returns
-    /// every report the page posted back.
-    private func reportsFromShell(
-        allowingRemoteContent: Bool,
-        rendering bodyHTML: String
-    ) async throws -> [Report] {
-        let (webView, collector) = try await loadedShell(allowingRemoteContent: allowingRemoteContent)
-        _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: bodyHTML))
-        try await Task.sleep(for: Self.reportSettlingTime)
-        return collector.reports
-    }
-
-    struct Report: Equatable {
-        let kind: String
-        let directive: String
-        let blockedURI: String
-    }
-
-    /// Stands in for `RemoteContentReporter` where a test needs to read the
-    /// reports rather than their effect.
+    /// One document window's worth of the app: its own `RemoteContentState`,
+    /// its own `MarkdownWebViewState`, and a web view carrying the real
+    /// `RemoteContentReporter`.
     @MainActor
-    final class ReportCollector: NSObject, WKScriptMessageHandler {
-        private(set) var reports: [Report] = []
+    private final class OpenDocument {
+        let state = RemoteContentState()
+        let viewState = MarkdownWebViewState()
+        let webView: WKWebView
+        private let waiter: ReloadableNavigationWaiter
 
-        func userContentController(
-            _ userContentController: WKUserContentController,
-            didReceive message: WKScriptMessage
-        ) {
-            guard let body = message.body as? [String: Any] else { return }
-            reports.append(
-                Report(
-                    kind: body["kind"] as? String ?? "",
-                    directive: body["directive"] as? String ?? "",
-                    blockedURI: body["blockedURI"] as? String ?? ""
-                )
+        init() async throws {
+            (webView, waiter) = RemoteContentHarness.reportingWebView(to: state)
+            _ = viewState.needsShellReload(allowingRemoteContent: state.isAllowed)
+            try await loadShell()
+        }
+
+        /// Renders through `MarkdownWebViewState`, so the dedupe and queueing
+        /// the app relies on are in the path rather than bypassed.
+        func render(_ bodyHTML: String, untilBlocked expected: Bool) async throws {
+            guard let ready = viewState.render(bodyHTML: bodyHTML) else { return }
+            try await RemoteContentHarness.render(
+                ready, into: webView, settlingOn: state, until: expected
             )
         }
-    }
-}
 
-/// Bridges `didFinish` to `async/await`. No `decidePolicyFor` override:
-/// nothing in this suite clicks a link, and running the real `Coordinator`
-/// here would only add a policy decision none of these tests are about.
-@MainActor
-private final class NavigationFinishWaiter: NSObject, WKNavigationDelegate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var finished = false
+        /// What the bar's button does, and what `updateNSView` does next.
+        func takeTheOffer(redrawing bodyHTML: String) async throws {
+            state.allow()
+            #expect(
+                viewState.needsShellReload(allowingRemoteContent: state.isAllowed),
+                "opting in did not ask for a reload"
+            )
+            _ = viewState.render(bodyHTML: bodyHTML)
+            try await loadShell()
+        }
 
-    func waitUntilFinished() async {
-        if finished { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        finished = true
-        continuation?.resume()
-        continuation = nil
+        /// Loads whichever shell `state` calls for, and hands `didFinish` to
+        /// `viewState` the way `Coordinator` does — which is what delivers a
+        /// body queued across the swap.
+        private func loadShell() async throws {
+            try await RemoteContentHarness.load(
+                shellAllowingRemoteContent: state.isAllowed, into: webView, waiter: waiter
+            )
+            if let queued = viewState.shellDidFinishLoading() {
+                _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: queued))
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
     }
 }

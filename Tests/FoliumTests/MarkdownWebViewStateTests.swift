@@ -81,13 +81,13 @@ struct MarkdownWebViewStateTests {
 
     @Test func theFirstShellHasToBeLoaded() {
         let state = MarkdownWebViewState()
-        #expect(state.willLoadShell(allowingRemoteContent: false))
+        #expect(state.needsShellReload(allowingRemoteContent: false))
     }
 
     @Test func aShellAlreadyShowingTheRightPolicyIsNotReloaded() {
         let state = MarkdownWebViewState()
-        _ = state.willLoadShell(allowingRemoteContent: false)
-        #expect(!state.willLoadShell(allowingRemoteContent: false))
+        _ = state.needsShellReload(allowingRemoteContent: false)
+        #expect(!state.needsShellReload(allowingRemoteContent: false))
     }
 
     /// Clicking "Load" is the only thing that reaches this. A `<meta>`
@@ -95,8 +95,8 @@ struct MarkdownWebViewStateTests {
     /// opt-in cannot edit the page on screen — it loads the other shell.
     @Test func optingInLoadsTheOtherShell() {
         let state = MarkdownWebViewState()
-        _ = state.willLoadShell(allowingRemoteContent: false)
-        #expect(state.willLoadShell(allowingRemoteContent: true))
+        _ = state.needsShellReload(allowingRemoteContent: false)
+        #expect(state.needsShellReload(allowingRemoteContent: true))
     }
 
     /// The incoming shell carries an empty document, so content that was on
@@ -104,11 +104,11 @@ struct MarkdownWebViewStateTests {
     /// the page on its way out.
     @Test func swappingShellsRequeuesTheContentOnScreen() {
         let state = MarkdownWebViewState()
-        _ = state.willLoadShell(allowingRemoteContent: false)
+        _ = state.needsShellReload(allowingRemoteContent: false)
         _ = state.shellDidFinishLoading()
         _ = state.render(bodyHTML: "<p>badges</p>")
 
-        _ = state.willLoadShell(allowingRemoteContent: true)
+        _ = state.needsShellReload(allowingRemoteContent: true)
         #expect(state.render(bodyHTML: "<p>badges</p>") == nil)
         #expect(state.shellDidFinishLoading() == "<p>badges</p>")
     }
@@ -118,11 +118,11 @@ struct MarkdownWebViewStateTests {
     /// nothing about the document changed.
     @Test func aSwappedShellStartsEmptySoTheSameBodyRendersIntoItAgain() {
         let state = MarkdownWebViewState()
-        _ = state.willLoadShell(allowingRemoteContent: false)
+        _ = state.needsShellReload(allowingRemoteContent: false)
         _ = state.shellDidFinishLoading()
         _ = state.render(bodyHTML: "<p>badges</p>")
 
-        _ = state.willLoadShell(allowingRemoteContent: true)
+        _ = state.needsShellReload(allowingRemoteContent: true)
         _ = state.shellDidFinishLoading()
         #expect(state.render(bodyHTML: "<p>badges</p>") == "<p>badges</p>")
     }

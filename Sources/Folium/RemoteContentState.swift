@@ -28,9 +28,15 @@ final class RemoteContentState: ObservableObject {
 
     /// Records a Content-Security-Policy refusal reported by
     /// `Resources/remote-content.js`.
-    func noteViolation(directive: String, blockedURI: String) {
-        guard !isAllowed, !hasBlockedContent else { return }
-        guard RemoteContent.isLoadable(directive: directive, blockedURI: blockedURI) else { return }
+    ///
+    /// The `isAllowed` check guards a narrow window rather than the common
+    /// case: once the opt-in shell is loaded it permits the images that were
+    /// refused, so there is normally nothing left to report. But `allow()`
+    /// returns before the reload finishes, and the strict shell is still
+    /// live until it does — a live reload landing in that gap would
+    /// otherwise raise an offer the user has already taken.
+    func note(_ violation: RemoteContentViolation) {
+        guard !isAllowed, !hasBlockedContent, violation.isLoadable else { return }
         hasBlockedContent = true
     }
 
@@ -42,6 +48,11 @@ final class RemoteContentState: ObservableObject {
     }
 
     /// Opts this document in, for as long as its window stays open.
+    ///
+    /// The choice outlives a live reload: the document is still the same
+    /// file, and re-asking on every save would make the app unusable beside
+    /// the editor that `CONTEXT.md` names as the workflow. It does not
+    /// outlive the window — see the type comment.
     func allow() {
         guard !isAllowed else { return }
         isAllowed = true

@@ -15,9 +15,11 @@
   is a different, invalid expression that matches nothing) restricts every
   directive to `file://` URLs specifically, and still permits this page's
   own local assets under loadFileURL's read-access grant. Verified in
-  `ContentSecurityPolicyTests.swift`: a remote image and a remote stylesheet
-  link are both blocked, with a `securitypolicyviolation` recorded for each,
-  while the bundled highlight.js and both local stylesheets still load.
+  `ContentSecurityPolicyTests.swift` and `RemoteContentOptInTests.swift`: a
+  remote image and a remote stylesheet link are both blocked under
+  `page.html`, with a `securitypolicyviolation` recorded for each, while the
+  bundled highlight.js and both local stylesheets still load; under
+  `page-remote.html` the stylesheet is still blocked and the image is not.
   `base-uri 'none'` is separately deliberate — issue #18 rewrites relative
   document-relative URLs in Swift rather than injecting a <base> tag; leave
   this here so that approach can't quietly regress to the tag-based one.
@@ -30,16 +32,23 @@
   access. `folium-doc:` is not added to `script-src`/`style-src` — nothing
   a rendered document references is ever executed or cascaded as code.
 
-  This file has a twin, `page-remote.html`, which is loaded in its place
-  for a document the user has opted into remote content for (issue #19).
-  The two are identical but for the `content` of the CSP tag below, where
-  the twin also admits `http:` and `https:` for `img-src`/`media-src`. Two
-  files rather than one, because a CSP delivered by `<meta>` is fixed once
-  the parser has read it: nothing script can do afterwards loosens it, so
-  opting in means loading a different shell. `MarkdownPageTests` asserts
-  the two files match line for line everywhere else — edit one, edit both.
+  THIS COMMENT IS IN BOTH SHELLS. There are two, and a document loads one
+  of them (issue #19): `page.html`, which blocks remote content, and
+  `page-remote.html`, whose `img-src` additionally admits `http:` and
+  `https:` for a document whose user took the offer to load it. Read the
+  CSP tag below to see which file you are in. Two files rather than one,
+  because a CSP delivered by `<meta>` is fixed once the parser has read
+  it: nothing script can do afterwards loosens it, and a second `<meta>`
+  policy can only intersect with the first. So opting in loads a different
+  shell — see ADR 0008. `MarkdownPageTests
+  .theTwoShellsDifferOnlyInTheirContentSecurityPolicy` asserts the two
+  files match line for line everywhere else. Edit one, edit both.
+
+  `remote-content.js` reports what the policy refuses back to the app, so
+  a blocked image is something the window can tell the user about instead
+  of a gap in the page.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file:; style-src file:; img-src file: folium-doc: http: https:; font-src file:; media-src file: folium-doc: http: https:; base-uri 'none'; form-action 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file:; style-src file:; img-src file: folium-doc: http: https:; font-src file:; media-src file: folium-doc:; base-uri 'none'; form-action 'none';">
 <link rel="stylesheet" href="github.css">
 <link rel="stylesheet" href="../HighlightJS/styles/github.min.css" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="../HighlightJS/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">

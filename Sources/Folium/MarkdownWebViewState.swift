@@ -16,7 +16,7 @@ final class MarkdownWebViewState {
     /// carries the same body doesn't rebuild it. See `render(bodyHTML:)`.
     private var renderedBodyHTML: String?
     /// Which shell the view has been told to load, or `nil` before it has
-    /// loaded any. See `willLoadShell(allowingRemoteContent:)`.
+    /// loaded any. See `needsShellReload(allowingRemoteContent:)`.
     private var loadedShellAllowsRemoteContent: Bool?
     var benchMarker: BenchMarker = BenchMarker()
 
@@ -61,6 +61,9 @@ final class MarkdownWebViewState {
     /// Whether the web view has to load a shell to be showing remote content
     /// (or not showing it) as `allowingRemoteContent` says (issue #19).
     ///
+    /// Answers a question and records the answer, which is why the caller
+    /// must load a shell whenever this returns `true`.
+    ///
     /// True the first time it is asked, and again whenever the answer
     /// changes — which happens at most once per document, when the user
     /// clicks "Load". Opting in cannot be done by editing the page already
@@ -70,7 +73,7 @@ final class MarkdownWebViewState {
     /// Calling this marks the shell as no longer loaded, so the body handed
     /// to `render(bodyHTML:)` next is queued for the new shell's `didFinish`
     /// rather than injected into the page on its way out.
-    func willLoadShell(allowingRemoteContent: Bool) -> Bool {
+    func needsShellReload(allowingRemoteContent: Bool) -> Bool {
         guard loadedShellAllowsRemoteContent != allowingRemoteContent else { return false }
         loadedShellAllowsRemoteContent = allowingRemoteContent
         isShellLoaded = false

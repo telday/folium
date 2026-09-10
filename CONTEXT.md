@@ -206,8 +206,11 @@ Use these terms; don't drift to synonyms.
   (ADR 0004).
 - **Chrome** — everything outside the rendered document body: window, tabs,
   menus, scrollbars, dialogs. Governed by macOS, never by GitHub's stylesheet.
-- **Page shell** — `Resources/page.html`, loaded once per `WKWebView` via
-  `loadFileURL`. Never reloaded.
+- **Page shell** — `Resources/page.html`, loaded per `WKWebView` via
+  `loadFileURL`. Never reloaded to show new content; content updates are
+  injections. A document whose user opts into remote content loads the
+  second shell, `Resources/page-remote.html`, once — the only reload there
+  is (ADR 0008).
 - **Body HTML** — the rendered HTML for one document, injected into the shell
   by `window.FoliumRenderBody` via `evaluateJavaScript`. Content updates are
   injections, never reloads.

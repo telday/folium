@@ -85,27 +85,27 @@ struct MarkdownPageTests {
         }
     }
 
-    @Test func onlyTheOptInShellAdmitsRemoteImagesAndMedia() throws {
+    @Test func onlyTheOptInShellAdmitsRemoteImages() throws {
         let strict = try cspDirectives(of: MarkdownPage.pageURL)
         let optIn = try cspDirectives(of: MarkdownPage.remoteContentPageURL)
 
-        for directive in ["img-src", "media-src"] {
-            #expect(strict[directive]?.contains("http:") == false)
-            #expect(strict[directive]?.contains("https:") == false)
-            #expect(optIn[directive]?.contains("http:") == true)
-            #expect(optIn[directive]?.contains("https:") == true)
-        }
+        #expect(strict["img-src"]?.contains("http:") == false)
+        #expect(strict["img-src"]?.contains("https:") == false)
+        #expect(optIn["img-src"]?.contains("http:") == true)
+        #expect(optIn["img-src"]?.contains("https:") == true)
     }
 
-    /// Opting in buys remote images, and nothing else. A document's remote
-    /// stylesheet or script stays refused under both shells, which is why
-    /// `RemoteContent.isLoadable` refuses to offer to load one.
-    @Test func theOptInShellStillExecutesAndCascadesNothingRemote() throws {
+    /// Opting in buys remote images, and nothing else — not scripts, not
+    /// stylesheets, not fonts, and not media. This is the assertion that
+    /// keeps `RemoteContent.loadableDirective` honest: it declines to offer
+    /// to load anything but an image, and this is why that is the truthful
+    /// answer rather than a conservative one.
+    @Test func theOptInShellAdmitsNothingRemoteBesidesImages() throws {
         let optIn = try cspDirectives(of: MarkdownPage.remoteContentPageURL)
 
-        for directive in ["default-src", "script-src", "style-src", "font-src"] {
-            #expect(optIn[directive]?.contains("http:") == false)
-            #expect(optIn[directive]?.contains("https:") == false)
+        for directive in ["default-src", "script-src", "style-src", "font-src", "media-src"] {
+            #expect(optIn[directive]?.contains("http:") == false, "\(directive) admits http:")
+            #expect(optIn[directive]?.contains("https:") == false, "\(directive) admits https:")
         }
     }
 
