@@ -56,6 +56,10 @@ struct FoliumApp: App {
 /// `scripts/coverage.sh` for something with nothing in it to test.
 private struct DocumentView: View {
     @StateObject private var document: LiveDocument
+    /// Per window, created here and stored nowhere else: opting one document
+    /// into remote content must not opt in anything else, now or later
+    /// (issue #19).
+    @StateObject private var remoteContent = RemoteContentState()
     @ObservedObject var scrollKeys: ScrollKeyStore
 
     init(text: String, fileURL: URL?, scrollKeys: ScrollKeyStore) {
@@ -70,7 +74,46 @@ private struct DocumentView: View {
             // Taken from the document rather than derived again here, so the
             // directory the body's references were rewritten against is the
             // one the scheme handler resolves them back against (issue #18).
-            documentDirectory: document.documentDirectory
+            documentDirectory: document.documentDirectory,
+            remoteContent: remoteContent
         )
+        // A safe-area inset, not an overlay: this reserves its own height, so
+        // the top of the document sits below the bar instead of behind it,
+        // and the web view's own scrolling accounts for it.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if remoteContent.hasBlockedContent {
+                RemoteContentBar { remoteContent.allow() }
+            }
+        }
+    }
+}
+
+/// The offer to load a document's blocked remote content (issue #19).
+///
+/// Native chrome around the document rather than markup inside it, per
+/// `CONTEXT.md` priority 3: the document belongs to GitHub's rendering, and
+/// everything around it belongs to macOS. Injecting this as HTML would also
+/// put it in the user's ⌘F results and in a copied selection.
+private struct RemoteContentBar: View {
+    let load: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("This document contains remote images.")
+                .font(.callout)
+            Spacer(minLength: 8)
+            Button("Load", action: load)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        // `.bar` is the material AppKit uses behind a window's own
+        // accessory bars, so this picks up the system's vibrancy and its
+        // light/dark appearance without naming a colour.
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }

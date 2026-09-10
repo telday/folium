@@ -4,6 +4,12 @@ import Testing
 
 struct NavigationPolicyTests {
     private let shellURL = URL(string: "file:///Applications/Folium.app/Contents/Resources/Resources/page.html")!
+    /// The shell a document loads once its user opts into remote content
+    /// (issue #19). Both shells are "the shell" as far as this policy is
+    /// concerned.
+    private let optInShellURL = URL(
+        string: "file:///Applications/Folium.app/Contents/Resources/Resources/page-remote.html"
+    )!
 
     // MARK: - Table-driven coverage of every rule in NavigationPolicy.decide
 
@@ -66,6 +72,16 @@ struct NavigationPolicyTests {
                 name: "a link back to the shell with no fragment is blocked, not reloaded",
                 url: shellURL, isLinkActivation: true,
                 expected: .block
+            ),
+            Case(
+                name: "an in-page anchor still scrolls after the document opts into remote content",
+                url: optInShellURL.appendingFragment("usage"), isLinkActivation: true,
+                expected: .scrollToAnchor("usage")
+            ),
+            Case(
+                name: "the opt-in shell's own load is allowed",
+                url: optInShellURL, isLinkActivation: false,
+                expected: .allow
             ),
             Case(
                 // An absolute file: URL an author wrote directly into the
@@ -131,7 +147,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL, isLinkActivation: false),
-            shellURL: relativeShell,
+            shellURLs: [relativeShell],
             documentDirectory: nil
         )
 
@@ -147,7 +163,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: shellURL.appendingFragment("usage"), isLinkActivation: true),
-            shellURL: relativeShell,
+            shellURLs: [relativeShell],
             documentDirectory: nil
         )
 
@@ -158,7 +174,7 @@ struct NavigationPolicyTests {
         for testCase in cases {
             let decision = NavigationPolicy.decide(
                 NavigationRequest(url: testCase.url, isLinkActivation: testCase.isLinkActivation),
-                shellURL: shellURL,
+                shellURLs: [shellURL, optInShellURL],
                 documentDirectory: testCase.documentDirectory
             )
             #expect(decision == testCase.expected, "\(testCase.name)")
@@ -180,7 +196,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
-            shellURL: shellURL,
+            shellURLs: [shellURL, optInShellURL],
             documentDirectory: directory
         )
 
@@ -195,7 +211,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: URL(string: "folium-doc://doc/notes.markdown"), isLinkActivation: true),
-            shellURL: shellURL,
+            shellURLs: [shellURL, optInShellURL],
             documentDirectory: directory
         )
 
@@ -216,7 +232,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: URL(string: "folium-doc://doc/install.command"), isLinkActivation: true),
-            shellURL: shellURL,
+            shellURLs: [shellURL, optInShellURL],
             documentDirectory: directory
         )
 
@@ -229,7 +245,7 @@ struct NavigationPolicyTests {
 
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: URL(string: "folium-doc://doc/../../etc/passwd"), isLinkActivation: true),
-            shellURL: shellURL,
+            shellURLs: [shellURL, optInShellURL],
             documentDirectory: directory
         )
 
@@ -241,7 +257,7 @@ struct NavigationPolicyTests {
         // no directory of its own to resolve a folium-doc: link against.
         let decision = NavigationPolicy.decide(
             NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: true),
-            shellURL: shellURL,
+            shellURLs: [shellURL, optInShellURL],
             documentDirectory: nil
         )
 

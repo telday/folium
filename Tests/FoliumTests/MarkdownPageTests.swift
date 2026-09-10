@@ -42,6 +42,104 @@ struct MarkdownPageTests {
         #expect(!shell.contains("cdn"))
     }
 
+    // MARK: - The opt-in shell (issue #19)
+
+    @Test func remoteContentPageURLPointsAtTheRealOptInShellFile() {
+        #expect(MarkdownPage.remoteContentPageURL.lastPathComponent == "page-remote.html")
+        #expect(FileManager.default.fileExists(atPath: MarkdownPage.remoteContentPageURL.path))
+    }
+
+    @Test func aDocumentGetsTheStrictShellUntilItsUserOptsIn() {
+        #expect(MarkdownPage.shellURL(allowingRemoteContent: false) == MarkdownPage.pageURL)
+        #expect(MarkdownPage.shellURL(allowingRemoteContent: true) == MarkdownPage.remoteContentPageURL)
+    }
+
+    @Test func bothShellsAreOfferedToTheNavigationPolicy() {
+        // Opting in swaps one shell for the other, and an in-page anchor
+        // link has to keep scrolling either side of that.
+        #expect(MarkdownPage.shellURLs.contains(MarkdownPage.pageURL))
+        #expect(MarkdownPage.shellURLs.contains(MarkdownPage.remoteContentPageURL))
+    }
+
+    /// The guard on the one real risk this design takes: two shells kept in
+    /// step by hand. Anything added to `page.html` — an asset, a script, a
+    /// container — that is not also in `page-remote.html` would work for
+    /// every document until its user clicked "Load", and then quietly stop.
+    ///
+    /// Compared line by line, so the failure names the line that drifted
+    /// rather than reporting that two long strings differ.
+    @Test func theTwoShellsDifferOnlyInTheirContentSecurityPolicy() throws {
+        let strict = try String(contentsOf: MarkdownPage.pageURL, encoding: .utf8)
+            .components(separatedBy: "\n")
+        let optIn = try String(contentsOf: MarkdownPage.remoteContentPageURL, encoding: .utf8)
+            .components(separatedBy: "\n")
+
+        #expect(strict.count == optIn.count, "the shells no longer have the same number of lines")
+        let cspMarker = "http-equiv=\"Content-Security-Policy\""
+        for (lineNumber, (strictLine, optInLine)) in zip(strict, optIn).enumerated() {
+            guard !strictLine.contains(cspMarker) else {
+                #expect(optInLine.contains(cspMarker), "line \(lineNumber + 1) is the CSP in only one shell")
+                continue
+            }
+            #expect(strictLine == optInLine, "line \(lineNumber + 1) drifted between the two shells")
+        }
+    }
+
+    @Test func onlyTheOptInShellAdmitsRemoteImages() throws {
+        let strict = try cspDirectives(of: MarkdownPage.pageURL)
+        let optIn = try cspDirectives(of: MarkdownPage.remoteContentPageURL)
+
+        #expect(strict["img-src"]?.contains("http:") == false)
+        #expect(strict["img-src"]?.contains("https:") == false)
+        #expect(optIn["img-src"]?.contains("http:") == true)
+        #expect(optIn["img-src"]?.contains("https:") == true)
+    }
+
+    /// Opting in buys remote images, and nothing else — not scripts, not
+    /// stylesheets, not fonts, and not media. This is the assertion that
+    /// keeps `RemoteContent.loadableDirective` honest: it declines to offer
+    /// to load anything but an image, and this is why that is the truthful
+    /// answer rather than a conservative one.
+    @Test func theOptInShellAdmitsNothingRemoteBesidesImages() throws {
+        let optIn = try cspDirectives(of: MarkdownPage.remoteContentPageURL)
+
+        for directive in ["default-src", "script-src", "style-src", "font-src", "media-src"] {
+            #expect(optIn[directive]?.contains("http:") == false, "\(directive) admits http:")
+            #expect(optIn[directive]?.contains("https:") == false, "\(directive) admits https:")
+        }
+    }
+
+    /// Both shells carry the reporter. Without it the strict shell refuses
+    /// remote images and never says so — the silent omission `CONTEXT.md`'s
+    /// first floor forbids.
+    @Test func bothShellsLoadTheRemoteContentReporter() throws {
+        for shellURL in MarkdownPage.shellURLs {
+            let shell = try String(contentsOf: shellURL, encoding: .utf8)
+            #expect(shell.contains(#"<script src="remote-content.js"></script>"#))
+        }
+    }
+
+    /// Splits a shell's CSP into `directive: [source, ...]`. Reading the
+    /// whole file would let a directive name appearing in the explanatory
+    /// comment above the tag satisfy an assertion about the policy itself.
+    private func cspDirectives(of shellURL: URL) throws -> [String: [String]] {
+        let shell = try String(contentsOf: shellURL, encoding: .utf8)
+        let openTag = #"<meta http-equiv="Content-Security-Policy" content=""#
+        guard let cspOpen = shell.range(of: openTag),
+              let cspClose = shell.range(of: "\">", range: cspOpen.upperBound..<shell.endIndex) else {
+            Issue.record("No CSP meta tag found in \(shellURL.lastPathComponent)")
+            return [:]
+        }
+        let policy = String(shell[cspOpen.upperBound..<cspClose.lowerBound])
+        var directives: [String: [String]] = [:]
+        for clause in policy.components(separatedBy: ";") {
+            let tokens = clause.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let name = tokens.first else { continue }
+            directives[name] = Array(tokens.dropFirst())
+        }
+        return directives
+    }
+
     @Test func shellDeclaresSystemColorScheme() throws {
         let shell = try String(contentsOf: MarkdownPage.pageURL, encoding: .utf8)
         // WKWebView needs this to report the system light/dark setting.

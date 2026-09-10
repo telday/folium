@@ -5,6 +5,15 @@
 // reloading would re-parse every stylesheet and re-parse/recompile all of
 // highlight.js on every single update.
 window.FoliumRenderBody = function (html) {
+  // Clears the offer belonging to the content being replaced (issue #19).
+  // WebKit dispatches securitypolicyviolation asynchronously, so a refusal
+  // this render provokes arrives after this call wherever it sits — moving
+  // it below the swap was tried, and the offer still arrived. It stays
+  // first so that ordering does not depend on that dispatch staying async.
+  if (window.FoliumDocumentWillRender) {
+    window.FoliumDocumentWillRender();
+  }
+
   var article = document.getElementById("markdown-content");
   article.innerHTML = html;
 

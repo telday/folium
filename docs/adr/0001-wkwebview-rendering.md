@@ -72,6 +72,18 @@ Reopening editing requires a new ADR, which would also have to revisit this
 one: source-with-live-preview was the shape that made WKWebView tolerable for
 editing, and in-place WYSIWYG remains a genuine liability here.
 
+### 2026-09-10 — a second shell, loaded once, for the remote-content opt-in
+
+The consequence above — one static shell per `WKWebView`, content pushed by
+`evaluateJavaScript` instead of reloading — is **amended**, not superseded.
+Content updates are still injections, always. But a document whose user opts
+into remote content (issue #19) loads a second shell, `page-remote.html`,
+whose Content-Security-Policy admits remote images. A `<meta>` CSP is fixed
+once parsed, so there is no way to relax the loaded page's policy in place.
+
+See [ADR 0008](0008-remote-content-opt-in-via-a-second-shell.md) for the
+options weighed and the cost accepted.
+
 ### 2026-08-13 — PlantUML dropped; Mermaid lazy-loaded
 
 The claim above that Mermaid and PlantUML are alike "JS libraries that render
