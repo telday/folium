@@ -50,6 +50,33 @@ struct DocumentRelativeLinksTests {
         #expect(resolved == ##"<a href="folium-doc://doc/sibling.md#section">sibling</a>"##)
     }
 
+    // MARK: - Raw HTML's own quoting (issue #20)
+
+    @Test func singleQuotedRelativeImageInRawHTMLResolves() {
+        // cmark-gfm always double-quotes the attributes it generates, but
+        // raw HTML reaches the page exactly as its author wrote it, and a
+        // hand-written README `<img src='logo.png'>` is as ordinary as the
+        // double-quoted form.
+        let html = "<img src='logo.png' align='right'>"
+        let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
+        #expect(resolved == "<img src='folium-doc://doc/logo.png' align='right'>")
+    }
+
+    @Test func singleQuotedAbsoluteURLInRawHTMLIsStillLeftAlone() {
+        let html = "<img src='https://example.com/logo.png'>"
+        let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
+        #expect(resolved == html)
+    }
+
+    @Test func aValueContainingTheOtherQuoteCharacterKeepsItsOwnDelimiters() {
+        // The two quoting styles must not be allowed to meet in the middle:
+        // an alternation that let a match open on `"` and close on `'`
+        // would swallow the rest of the tag.
+        let html = #"<img alt="Bob's logo" src="logo.png">"#
+        let resolved = DocumentRelativeLinks.resolve(html, relativeTo: directory)
+        #expect(resolved == #"<img alt="Bob's logo" src="folium-doc://doc/logo.png">"#)
+    }
+
     // MARK: - Percent-encoding: spaces, `#`/`?`, and non-ASCII in filenames
 
     @Test func alreadyPercentEncodedSpaceIsNotDoubleEncoded() {
