@@ -24,12 +24,20 @@ window.FoliumScrollBy = function (lines) {
 // evaluateJavaScript when NavigationPolicy.decide resolves an in-document
 // link to .scrollToAnchor rather than letting WebKit navigate to it.
 //
+// Two ways to name a target, because a document has two ways to declare one.
+// `getElementById` covers `<h2 id="install">`; the `getElementsByName`
+// fallback covers `<a name="install"></a>`, the older form that raw HTML
+// brought back into reach (issue #20) — the whole point of that anchor is
+// that `#install` scrolls to it, so rendering the element without finding it
+// would fix half the row and leave the symptom.
+//
 // cmark-gfm does not emit `id` attributes on headings (verified against this
-// shell), so a `#some-heading` link currently has no element to find here —
-// tracked separately, not fixed by this function. The no-op below is what
-// keeps that gap from surfacing as a JS exception in the console instead.
+// shell), so a `#some-heading` link still has no element to find here —
+// tracked separately, and no fallback here can invent an id nothing wrote.
+// The no-op below is what keeps that gap from surfacing as a JS exception in
+// the console instead.
 window.FoliumScrollToAnchor = function (id) {
-  var target = document.getElementById(id);
+  var target = document.getElementById(id) || document.getElementsByName(id)[0];
   if (!target) {
     return;
   }

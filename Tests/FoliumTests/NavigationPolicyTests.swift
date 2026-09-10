@@ -49,9 +49,10 @@ struct NavigationPolicyTests {
                 expected: .openInBrowser(URL(string: "https://example.com/a")!)
             ),
             Case(
-                name: "https link opens in the browser even as the initial navigation",
+                // Why a click is required: see `NavigationPolicy.decide`.
+                name: "an http(s) navigation nobody clicked is blocked, not opened",
                 url: URL(string: "https://example.com"), isLinkActivation: false,
-                expected: .openInBrowser(URL(string: "https://example.com")!)
+                expected: .block
             ),
             Case(
                 name: "in-shell fragment scrolls instead of navigating",
@@ -201,6 +202,25 @@ struct NavigationPolicyTests {
         )
 
         #expect(decision == .openDocument(notes.standardizedFileURL.resolvingSymlinksInPath()))
+    }
+
+    /// The same gate as the http(s) one, on the other way out of the shell:
+    /// `.openDocument` hands its URL to `NSWorkspace`, so without this a
+    /// document could open another document just by being looked at.
+    /// Narrower than the http(s) case — a contained, same-directory `.md` —
+    /// and the same class of bug, which is why one gate covers both.
+    @Test func documentSchemeNavigationNobodyClickedIsBlockedNotOpened() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("notes.md"))
+
+        let decision = NavigationPolicy.decide(
+            NavigationRequest(url: URL(string: "folium-doc://doc/notes.md"), isLinkActivation: false),
+            shellURLs: [shellURL, optInShellURL],
+            documentDirectory: directory
+        )
+
+        #expect(decision == .block)
     }
 
     @Test func documentSchemeLinkToAFileWithTheLongMarkdownExtensionOpens() throws {

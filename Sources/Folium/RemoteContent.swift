@@ -59,11 +59,16 @@ enum RemoteContent {
     /// comes back as `img-src-elem`, not `img-src` — and the sub-directives
     /// are exactly the cases their parent covers.
     ///
-    /// Images only, deliberately. Issue #19 asks for remote *images*, and a
-    /// document cannot reference remote media today in any case: cmark-gfm
-    /// runs in safe mode, so raw HTML is stripped and `![](url)` is the only
-    /// way a remote reference reaches the DOM. Widening this when raw HTML
-    /// lands is a change to make then, together with the bar's wording.
+    /// Images only, deliberately: `page-remote.html` relaxes `img-src` and
+    /// nothing else, so this has to name exactly what taking the offer
+    /// would actually load.
+    ///
+    /// Raw HTML (issue #20) made a remote `<video>` expressible, which it
+    /// was not when issue #19 wrote this — the reason recorded here used to
+    /// be "there is no remote media to offer," and that stopped being true.
+    /// What it did *not* do is widen the shell, so a blocked clip still
+    /// raises no offer. Widening both together, and rewording the bar to
+    /// match, is issue #49.
     static let loadableDirective = "img-src"
 
     /// Schemes the opt-in shell admits. `http:` as well as `https:`: "Load"

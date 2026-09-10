@@ -44,6 +44,15 @@
   .theTwoShellsDifferOnlyInTheirContentSecurityPolicy` asserts the two
   files match line for line everywhere else. Edit one, edit both.
 
+  Since issue #20 this policy is load-bearing for more than the network
+  floor. A document's raw HTML now reaches the DOM as written, so
+  `script-src`'s refusal of inline script, `onerror=` attributes and
+  `javascript:` URLs is the only thing standing between an untrusted file
+  and arbitrary code — nothing filters the markup on the way in, by
+  design (ADR 0009). Adding `'unsafe-inline'` to `script-src`, or to
+  `style-src` where it would let a document style itself, gives that away.
+  `RawHTMLSafetyTests` fails if any of it is loosened.
+
   `remote-content.js` reports what the policy refuses back to the app, so
   a blocked image is something the window can tell the user about instead
   of a gap in the page.

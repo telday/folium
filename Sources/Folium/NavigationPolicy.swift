@@ -10,7 +10,9 @@ import Foundation
 struct NavigationRequest: Equatable {
     let url: URL?
     /// `true` when `WKNavigationAction.navigationType == .linkActivated` —
-    /// a user click, as opposed to the shell's own initial `loadFileURL`.
+    /// the user clicked a link, as opposed to the shell's own initial
+    /// `loadFileURL` or a navigation the document started by itself (a
+    /// `<meta http-equiv="refresh">`, a submitted form).
     let isLinkActivation: Bool
 }
 
@@ -46,6 +48,37 @@ enum NavigationPolicy {
     ///     for a document with nothing on disk, which has no such links to
     ///     resolve in the first place.
     static func decide(_ request: NavigationRequest, shellURLs: [URL], documentDirectory: URL?) -> NavigationDecision {
+        let decision = decideByDestination(request, shellURLs: shellURLs, documentDirectory: documentDirectory)
+        switch decision {
+        // Handing a URL to another application — the user's browser, or
+        // whatever opens a sibling `.md` — is something only a *click* may
+        // do. A document is raw HTML now (issue #20), and raw HTML can start
+        // a navigation on its own: a `<meta http-equiv="refresh"
+        // content="0;url=https://…">` in the body was measured arriving here
+        // as a non-link activation, and opening it would have handed the
+        // user's browser an attacker-chosen URL the moment the document was
+        // viewed — the no-network floor lost to a file, without a click.
+        //
+        // The Content-Security-Policy cannot cover that one: `<meta refresh>`
+        // is a navigation, not a fetch, and no directive governs it. So the
+        // gate is here, across both ways out at once, where anything else
+        // that can navigate without a click also has to pass — a submitted
+        // form, a scripted `window.location`, the next thing HTML grows.
+        case .openInBrowser, .openDocument:
+            return request.isLinkActivation ? decision : .block
+        case .allow, .scrollToAnchor, .block:
+            return decision
+        }
+    }
+
+    /// Where the request points, ignoring who asked. `decide` layers the
+    /// click requirement over this; splitting them keeps "what is this URL"
+    /// separate from "may this actor follow it".
+    private static func decideByDestination(
+        _ request: NavigationRequest,
+        shellURLs: [URL],
+        documentDirectory: URL?
+    ) -> NavigationDecision {
         guard let url = request.url else { return .block }
 
         if url.scheme == "http" || url.scheme == "https" {
@@ -102,6 +135,12 @@ enum NavigationPolicy {
 
         // Everything else — javascript:, data:, mailto:, custom schemes —
         // is blocked.
+        //
+        // Not that `javascript:` ever gets here: WebKit evaluates a clicked
+        // `javascript:` URL without consulting `decidePolicyFor` at all,
+        // measured in `RawHTMLSafetyTests`. What actually refuses it is the
+        // shell's `script-src`. This case is the belt to that pair of
+        // braces, not the other way round.
         return .block
     }
 

@@ -39,11 +39,15 @@ struct RemoteContentTests {
         #expect(!violation("script-src", "https://example.com/tracker.js").isLoadable)
     }
 
-    /// Images only. Issue #19 asks for remote images, the bar says images,
-    /// and cmark-gfm's safe mode means `![](url)` is the only way a remote
-    /// reference reaches the DOM at all — so there is no remote media to
-    /// offer, and offering it would be a promise `page-remote.html` does not
-    /// keep.
+    /// Images only. Issue #19 asks for remote images and the bar says
+    /// images, so offering media would be a promise `page-remote.html` does
+    /// not keep — its `media-src` still admits no remote scheme.
+    ///
+    /// Raw HTML (issue #20) is what makes this reachable rather than
+    /// theoretical: a document can now write `<video src="https://…">`,
+    /// where before this test guarded a case nothing could produce.
+    /// Widening the shell and this rule together is issue #49; until then
+    /// the assertion below is the honest one.
     @Test func doesNotOfferToLoadBlockedRemoteMedia() {
         #expect(!violation("media-src", "https://example.com/clip.mp4").isLoadable)
     }

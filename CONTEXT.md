@@ -40,12 +40,12 @@ content, showing wrong content, or crashing on valid input is the one
 unforgivable class of failure. When rendering cannot be faithful, **fail
 visibly** — never silently omit.
 
-> This floor is currently violated: `CMARK_OPT_DEFAULT` runs cmark-gfm in safe
-> mode, so raw HTML in a document is replaced by an invisible
-> `<!-- raw HTML omitted -->`. Centered logos, badge rows, HTML tables, and
-> `<a name>` anchors vanish with no indication; `<details>` renders permanently
-> expanded; `<br>` silently joins the words on either side of it. Tracked
-> separately — see the raw-HTML issue.
+> Raw HTML is part of what a Markdown file says, so it renders
+> (`CMARK_OPT_UNSAFE`, [ADR 0009](docs/adr/0009-raw-html-sanitized-below-the-renderer.md)).
+> Filtering it at the parser would silently drop centered logos, badge rows,
+> HTML tables and `<a name>` anchors, and render `<details>` permanently
+> expanded — so the filtering happens below the renderer instead, where it
+> can refuse *behaviour* without deleting *content*.
 
 ### 2. No network
 

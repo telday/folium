@@ -55,10 +55,12 @@ enum DocumentRelativeLinks {
         // replacing a later range first would shift the string out from
         // under any match still to come.
         for match in matches.reversed() {
-            guard match.numberOfRanges > 1 else { continue }
-            let valueRange = match.range(at: 1)
-            guard valueRange.location != NSNotFound,
-                  let value = Range(valueRange, in: html).map({ String(html[$0]) }),
+            // Exactly one of the pattern's two quoting alternatives takes
+            // part in any match; the other reports NSNotFound, which
+            // `Range(_:in:)` below turns into a nil this skips on.
+            let doubleQuoted = match.range(at: 1)
+            let valueRange = doubleQuoted.location == NSNotFound ? match.range(at: 2) : doubleQuoted
+            guard let value = Range(valueRange, in: html).map({ String(html[$0]) }),
                   let resolved = resolvedAbsoluteString(for: value, relativeTo: directory)
             else { continue }
             mutable.replaceCharacters(in: valueRange, with: resolved)
@@ -66,16 +68,28 @@ enum DocumentRelativeLinks {
         return mutable as String
     }
 
-    /// Matches a `src="..."` or `href="..."` attribute, capturing the quoted
-    /// value. The lookbehind requires the attribute name to start right
-    /// after whitespace, so a hypothetical `data-src="..."` — not something
-    /// cmark-gfm emits, but not impossible in HTML generally — doesn't match
-    /// on the `src` inside it. cmark-gfm's HTML renderer always quotes
-    /// attribute values with `"` and HTML-escapes any literal `"` inside
-    /// them to `&quot;`, so a bare `"` inside `[^"]*` is always the value's
-    /// real end, never one it contains.
+    /// Matches a `src`/`href` attribute, capturing its quoted value —
+    /// group 1 for a double-quoted value, group 2 for a single-quoted one.
+    /// The two quote characters are separate alternatives rather than a
+    /// character class on both ends, so a match that opens on one can only
+    /// close on the same one; `alt="Bob's logo"` must not let a match run
+    /// from the wrong quote to the end of the tag.
+    ///
+    /// The lookbehind requires the attribute name to start right after
+    /// whitespace, so a `data-src="..."` doesn't match on the `src` inside
+    /// it.
+    ///
+    /// Both quoting styles, because the input is no longer only cmark-gfm's
+    /// own output: raw HTML reaches the page exactly as its author wrote it
+    /// (issue #20), and hand-written HTML single-quotes as readily as it
+    /// double-quotes. What that leaves unreachable — unquoted values, and a
+    /// `src=`/`href=` lookalike inside another attribute's value — is
+    /// [ADR 0009]'s to explain; here it is just another value `resolve`
+    /// leaves exactly as it was.
+    ///
+    /// [ADR 0009]: ../../docs/adr/0009-raw-html-sanitized-below-the-renderer.md
     private static let attributeValueRegex: NSRegularExpression? = try? NSRegularExpression(
-        pattern: #"(?<=\s)(?:src|href)="([^"]*)""#
+        pattern: #"(?<=\s)(?:src|href)=(?:"([^"]*)"|'([^']*)')"#
     )
 
     /// Resolves one attribute value, or returns `nil` if it should be left
