@@ -188,3 +188,20 @@ checkout's sources and verifies the artifact on its own contents.
 **It is deliberately not part of `make check`**, which stays the fast
 code-change loop and never builds a release bundle. CI runs
 `make bundle && make verify-bundle` as its own step on every pull request.
+
+## License
+
+Folium is released under the [MIT License](LICENSE).
+
+The third-party code that ships inside the app bundle — highlight.js and
+cmark-gfm, both permissive and attribution-only — is recorded with its
+copyright notices in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+## Versioning
+
+Versions are semantic, applied to **user-visible behavior** rather than to the
+source tree — a refactor nobody can see moves no version component. Releases
+are cut when there is a reason to install one, rather than on a schedule.
+[ADR 0010](docs/adr/0010-semantic-versioning-against-user-visible-behavior.md)
+has the rest: which component moves when, what the first public version is, and
+what gates a `1.0.0`.

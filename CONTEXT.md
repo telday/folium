@@ -225,6 +225,10 @@ Use these terms; don't drift to synonyms.
   because there is nothing for one to do (ADR 0006).
 - **Vendored asset** — third-party code committed as a real file in the bundle
   (highlight.js), never fetched at runtime.
+- **Linked dependency** — third-party code compiled into the executable rather
+  than shipped as a file beside it (cmark-gfm). Redistributed to users exactly
+  as a vendored asset is, so its notice belongs in `THIRD_PARTY_LICENSES.md`
+  too.
 - **First-party asset** — CSS/JS/HTML authored here, living as real files under
   `Sources/Folium/Resources/`, never as Swift string literals.
 
@@ -233,7 +237,13 @@ Use these terms; don't drift to synonyms.
 Deliberately unresolved. Decide them when they come up — and record the answer
 here or in an ADR.
 
-- Versioning and release cadence for public users.
 - Preferences migration policy across versions.
 - Which file extensions Folium claims (`.md`, `.markdown`, `.mdx`, `.txt`?).
 - Behavior on very large documents, and on files that fail to decode.
+
+Answered, and no longer open:
+
+- *Versioning and release cadence.* Semantic versioning against user-visible
+  behavior, released when there is a reason to install one — see
+  [ADR 0010](docs/adr/0010-semantic-versioning-against-user-visible-behavior.md),
+  which also names the first public version and what gates a `1.0.0`.
