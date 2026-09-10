@@ -42,19 +42,30 @@ struct RemoteContentOptInTests {
         #expect(RemoteContent.isLoadable(directive: violation.directive, blockedURI: violation.blockedURI))
     }
 
-    /// The report that clears the last document's offer has to arrive before
-    /// the report that raises this one's, or a live reload would clear an
-    /// offer it just raised and the bar would vanish while its images are
-    /// still missing.
-    @Test func theRenderIsReportedBeforeAnythingItBlocks() async throws {
-        let reports = try await reportsFromShell(
-            allowingRemoteContent: false,
-            rendering: #"<img src="https://example.invalid/badge.svg">"#
-        )
+    /// A live reload that removes the last remote image has to take the
+    /// offer with it. Otherwise the bar goes on claiming something the file
+    /// no longer says — the same class of untruth as a missing image.
+    @Test func aLiveReloadThatRemovesTheLastRemoteImageWithdrawsTheOffer() async throws {
+        let (webView, state) = try await shellReportingToItsOwnState()
 
-        let renderIndex = try #require(reports.firstIndex { $0.kind == "willRender" })
-        let violationIndex = try #require(reports.firstIndex { $0.kind == "violation" })
-        #expect(renderIndex < violationIndex)
+        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
+        #expect(state.hasBlockedContent)
+
+        try await render("<p>The badges are gone.</p>", into: webView)
+        #expect(!state.hasBlockedContent)
+    }
+
+    /// And the other direction: a reload that introduces a remote image has
+    /// to raise the offer, even though the render that precedes it clears
+    /// whatever the last one found.
+    @Test func aLiveReloadThatAddsARemoteImageRaisesTheOffer() async throws {
+        let (webView, state) = try await shellReportingToItsOwnState()
+
+        try await render("<p>Nothing remote here yet.</p>", into: webView)
+        #expect(!state.hasBlockedContent)
+
+        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
+        #expect(state.hasBlockedContent)
     }
 
     @Test func aDocumentWithNoRemoteContentReportsNothingToOffer() async throws {
@@ -139,6 +150,19 @@ struct RemoteContentOptInTests {
     /// in `MarkdownWebView.swift`, which is excluded from the unit-coverage
     /// requirement.
     @Test func theRealReporterRaisesTheOfferOnTheRealState() async throws {
+        let (webView, state) = try await shellReportingToItsOwnState()
+
+        #expect(!state.hasBlockedContent)
+        try await render(#"<img src="https://example.invalid/badge.svg">"#, into: webView)
+        #expect(state.hasBlockedContent)
+        // Raising the offer must not be mistaken for taking it.
+        #expect(!state.isAllowed)
+    }
+
+    /// Loads the default shell wired to the app's real `RemoteContentReporter`
+    /// and a real `RemoteContentState`, through the app's own
+    /// `MarkdownWebView.configuration`.
+    private func shellReportingToItsOwnState() async throws -> (webView: WKWebView, state: RemoteContentState) {
         let state = RemoteContentState()
         let configuration = MarkdownWebView.configuration(documentDirectory: nil, remoteContent: state)
         let webView = WKWebView(frame: Self.viewFrame, configuration: configuration)
@@ -149,14 +173,14 @@ struct RemoteContentOptInTests {
             allowingReadAccessTo: MarkdownPage.resourceBaseURL
         )
         await waiter.waitUntilFinished()
+        return (webView, state)
+    }
 
-        #expect(!state.hasBlockedContent)
-        _ = try await webView.evaluateJavaScript(
-            MarkdownPage.renderBodyScript(bodyHTML: #"<img src="https://example.invalid/badge.svg">"#)
-        )
+    /// Renders a body through the production injection path and waits for
+    /// whatever the page reports about it to arrive.
+    private func render(_ bodyHTML: String, into webView: WKWebView) async throws {
+        _ = try await webView.evaluateJavaScript(MarkdownPage.renderBodyScript(bodyHTML: bodyHTML))
         try await Task.sleep(for: Self.reportSettlingTime)
-        #expect(state.hasBlockedContent)
-        #expect(!state.isAllowed)
     }
 
     // MARK: - Helpers

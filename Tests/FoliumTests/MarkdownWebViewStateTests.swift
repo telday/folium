@@ -113,6 +113,20 @@ struct MarkdownWebViewStateTests {
         #expect(state.shellDidFinishLoading() == "<p>badges</p>")
     }
 
+    /// The incoming shell carries an empty document, so a body the outgoing
+    /// one was showing is not "already on screen" any more — even though
+    /// nothing about the document changed.
+    @Test func aSwappedShellStartsEmptySoTheSameBodyRendersIntoItAgain() {
+        let state = MarkdownWebViewState()
+        _ = state.willLoadShell(allowingRemoteContent: false)
+        _ = state.shellDidFinishLoading()
+        _ = state.render(bodyHTML: "<p>badges</p>")
+
+        _ = state.willLoadShell(allowingRemoteContent: true)
+        _ = state.shellDidFinishLoading()
+        #expect(state.render(bodyHTML: "<p>badges</p>") == "<p>badges</p>")
+    }
+
     @Test func doesNotConfirmPaintsWhenBenchIsDisabled() {
         // A real user's launch and every one of their live-reloads must
         // never pay for the paint-confirmation round trip.

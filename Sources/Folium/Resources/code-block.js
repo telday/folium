@@ -5,9 +5,11 @@
 // reloading would re-parse every stylesheet and re-parse/recompile all of
 // highlight.js on every single update.
 window.FoliumRenderBody = function (html) {
-  // Before the swap, not after: any Content-Security-Policy refusal this
-  // content provokes is reported asynchronously, and clearing afterwards
-  // would race with — and sometimes erase — the report it caused.
+  // Clears the offer belonging to the content being replaced (issue #19).
+  // WebKit dispatches securitypolicyviolation asynchronously, so a refusal
+  // this render provokes arrives after this call wherever it sits — moving
+  // it below the swap was tried, and the offer still arrived. It stays
+  // first so that ordering does not depend on that dispatch staying async.
   if (window.FoliumDocumentWillRender) {
     window.FoliumDocumentWillRender();
   }
